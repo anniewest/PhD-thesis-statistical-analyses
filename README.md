@@ -24,11 +24,8 @@ Link to thesis (update once published).
 Data chapters in the thesis 'The microbiome in threatened species conservation: implications for the conservation of kākāpō and takahē':
 
 - Chapter Three: Influence of management practice on the microbiota of a critically endangered species: A longitudinal study of kākāpō chick faeces and associated nest litter
-- 
 - Chapter Four: The mycobiota of faeces from kākāpō chicks and associated nest litter
-- 
 - Chapter Five: Capturing species-wide diversity of the gut microbiota and its relationship with genomic variation in the critically endangered kākāpō
-- 
 - Chapter Six: Gut microbiota of the threatened takahē: biogeographic patterns and conservation implications
 
 All chapters utilised amplicon sequence variants (ASVs) produced by the R package [DADA2](https://benjjneb.github.io/dada2/). 
