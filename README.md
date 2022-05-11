@@ -1,4 +1,4 @@
-# Statistical analyses from the PhD thesis of A.G.West - University of Auckland
+# Statistical analyses from the PhD thesis of A.G. West - University of Auckland
 
 Bioinformatics pipelines for microbial amplicon sequence data (demultiplexed, paired-end reads) generated from gut microbial communities of Aotearoa New Zealand kākāpō and takahē.
 
