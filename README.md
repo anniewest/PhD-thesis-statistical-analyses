@@ -1,4 +1,4 @@
-# PhD-thesis-statistical-analyses
+# Statistical analyses from the PhD thesis of A.G.West - University of Auckland
 
 Bioinformatics pipelines for microbial amplicon sequence data (demultiplexed, paired-end reads) generated from gut microbial communities of Aotearoa New Zealand kākāpō and takahē.
 
@@ -32,7 +32,7 @@ All chapters utilised amplicon sequence variants (ASVs) produced by the R packag
 
 ***
 
-##Publications from this PhD thesis
+## Publications from this PhD thesis
 
 **Chapter Two**: [The microbiome in threatened species conservation](https://www.sciencedirect.com/science/article/pii/S0006320718311145)
 
