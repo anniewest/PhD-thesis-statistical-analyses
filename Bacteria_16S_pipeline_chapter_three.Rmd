@@ -1,0 +1,2701 @@
+---
+title: "Kākāpō chick and nest bacterial biota analyses"
+author: "Annie G. West"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages into session, and print package version.
+
+```{r results='hide'}
+library(ggplot2); packageVersion("ggplot2")
+library(Manu); packageVersion("Manu")
+library(phyloseq); packageVersion("phyloseq")
+library(gridExtra); packageVersion("gridExtra")
+library(ggsignif); packageVersion("ggsignif")
+library(ggrepel); packageVersion("ggrepel")
+library(ggsci); packageVersion("ggsci")
+library(hrbrthemes); packageVersion("hrbrthemes")
+library(tidyverse); packageVersion("tidyverse")
+library(viridis); packageVersion("viridis")
+library(extrafont); packageVersion("extrafont")
+set.seed(100)
+```
+
+##Import data
+
+```{r}
+seqtab.nochim <- data.frame(readRDS("NC_output_final/16S_ASVtab_nochim_NC.rds"))
+to.delete <- c("P-APM-28-2","TIW2A-21-4","WAI4B-28-3","BLANK-KB","QUNA-01-3D","AW-NA-31-3","BO-NB-28-3","KA-NB-12-4","KUI3B-13-5","P-KUN-13-5","PUR3B-23-3")
+
+rownames(seqtab.nochim)[rownames(seqtab.nochim) == "HIN2A-28-3"] <- "HIN3A-28-3"
+rownames(seqtab.nochim)[rownames(seqtab.nochim) == "HIN3A-18-2"] <- "HIN3A-19-2"
+
+seqtab.nochim <- seqtab.nochim[!(rownames(seqtab.nochim) %in% to.delete),]
+sum(rowSums(seqtab.nochim)) #19117949
+
+#write.table(seqtab.nochim, "16S_ASV_table_kakapo_BioC.txt", sep = '\t')
+```
+
+```{r}
+map <- read.table("16S_chick_nest_map_2021working_version.txt",header = T, sep = '\t')
+row.names(map) <- map$SAMPLE.ID
+
+map$Name[map$Name == "KUIA_NEST_DOUBLE"] <- "KUIA_NEST"
+map$Name[map$Name == "BOOMER_NEST_DOUBLE"] <- "BOOMER_NEST"
+map$Name[map$Name == "AWARUA_NEST_DOUBLE"] <- "AWARUA_NEST"
+map$Name[map$Name == "ARANGA_NEST_DOUBLE"] <- "ARANGA_NEST"
+
+identical(rownames(seqtab.nochim), rownames(map))
+setdiff(rownames(seqtab.nochim), rownames(map))
+
+# Make sure row names are the same between map and ASV table
+map = map[rownames(seqtab.nochim),]
+identical(rownames(seqtab.nochim), rownames(map))
+
+
+map$Faecal_experiment <- factor(map$Faecal_experiment,
+                         levels = c("LEFT","REMOVED","Mixed","HAND_REARING","UNKNOWN"),
+                         labels = c("Faeces in","Faeces removed","Mixed","Hand rearing","Unknown"))
+
+map$Aspergillosis <- factor(map$Aspergillosis,
+                            levels = c("NO","LINKED","YES"),
+                            labels = c("Unaffected","Linked","Infected"))
+
+map$Nest_type <- factor(map$Nest_type,
+                        levels = c("A-FRAME","HAND_REARING","GAHNIA","ROCK","HOLE","TREE","FOLLOW_UP"),
+                        labels = c("A-frame","Hand rearing","Open","Rock","Hole","Tree","Sub-adult samples"))
+```
+
+```{r}
+taxa <- readRDS("NC_output_final/16S_taxa_table_NC.rds")
+Ptree <- readRDS("NC_output_final/phylo_tree_NC.rds")
+
+taxa <- data.frame(taxa)
+taxa$Family[is.na(taxa$Family)]="Unclassified"
+taxa$Genus[is.na(taxa$Genus)]="Unclassified"
+taxa$Species[is.na(taxa$Species)]="unclassified"
+taxa$Taxonomy <- paste(taxa$Genus, taxa$Species, sep=" ")
+
+taxmatrix <- as.matrix(taxa) 
+```
+
+#Phyloseq
+Create a phyloseq object for downstream analyses:
+
+```{r}
+ps <- phyloseq(tax_table(taxmatrix),sample_data(map),
+               otu_table(seqtab.nochim, taxa_are_rows = F), 
+               phy_tree(Ptree$tree))
+ps
+
+psF = subset_samples(ps, Type != "LITTER") #26602 taxa and 291 samples
+psF
+
+psN = subset_samples(ps, Type != "FAECES") #26602 taxa and 129 samples 
+psN
+```
+
+
+##Filtering with phyloseq
+
+####Taxonomic filtering 
+
+Use to filter out non-target taxa e.g. mitochondria etc. 
+
+```{r}
+# Show available ranks in the dataset
+rank_names(ps)
+
+ps_tax_table <- as.data.frame(tax_table(ps))
+sum(is.na(ps_tax_table$Phylum)) #303 counts of 26602 taxa = 1% of taxa >> 19117949 reads spanning 26602 microbial taxa
+str(ps_tax_table$Phylum)
+sapply(ps_tax_table, n_distinct)
+levels(factor(ps_tax_table$Kingdom))
+
+plyr::count(ps_tax_table$Kingdom) #34 Archaea and 3 NA
+
+archaea = subset_taxa(ps, Kingdom == "Archaea")
+archaea
+sum(rowSums(data.frame(otu_table(archaea)))) #973 reads 
+```
+
+
+```{r}
+ps_tax_table[is.na(ps_tax_table)]="Unclassified"
+asv_table_ps<-as.data.frame(t(otu_table(ps)))
+asv_table_wTax_ps <- cbind(asv_table_ps, ps_tax_table)
+
+Phyla.sum.ps<-aggregate(asv_table_wTax_ps[,1:420], list(asv_table_wTax_ps$Phylum),sum)
+row.names(Phyla.sum.ps)<- Phyla.sum.ps$Group.1
+Phyla.sum.ps$Group.1 <- NULL
+sum(rowSums(Phyla.sum.ps)) #19117949
+rowSums(Phyla.sum.ps != 0) #number of samples that phylum occurs in >> Proteobacteria = 419, Bacteroidota = 300, Firmicutes = 385, NA = 118
+
+P_rowsum.ps <- rowSums(Phyla.sum.ps)
+P_rowsum.ps #1300 reads unclassified, 14640707 Proteobacteria, 358295 Bacteroidetes, 3061003 Firmicutes                         
+dir.create("tables")
+write.csv(P_rowsum.ps, "tables/P_rowsum_ps.csv")
+
+#1300 / 19117949 = 0.007% of reads unassigned at phylum level
+
+
+genus.sum.ps<-aggregate(asv_table_wTax_ps[,1:420], list(asv_table_wTax_ps$Genus),sum)
+row.names(genus.sum.ps)<- genus.sum.ps$Group.1
+genus.sum.ps$Group.1 <- NULL
+sum(rowSums(genus.sum.ps)) #19117949
+rowSums(genus.sum.ps != 0) #number of samples that phylum occurs in >> Proteobacteria = 419, Bacteroidota = 300, Firmicutes = 385, NA = 118
+
+G_rowsum.ps <- rowSums(genus.sum.ps)
+G_rowsum.ps #1300 reads unclassified, 14640707 Proteobacteria, 358295 Bacteroidetes, 3061003 Firmicutes                         
+write.csv(G_rowsum.ps, "tables/G_rowsum_ps.csv")
+write.csv(genus.sum.ps, "tables/genus_sums_ps.csv")
+```
+
+```{r}
+# Show available ranks in the dataset
+# Create table, number of features for each phyla
+# Show available ranks in the dataset
+rank_names(psF)
+
+# Create table, number of features for each phyla
+table(tax_table(psF)[, "Phylum"], exclude = NULL)
+
+psF0 <- subset_taxa(psF, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+
+phyla2Filter = c("<NA>")
+psF1 = subset_taxa(psF0, !Phylum %in% phyla2Filter)#4% not assigned
+
+phyla2Filter = c("Chloroplast","Rickettsiales")
+psF1 = subset_taxa(psF1, !Order %in% phyla2Filter)
+psF1 #25914 taxa
+rank_names(psF1)
+table(tax_table(psF1)[,"Phylum"], exclude = NULL)
+
+# Show available ranks in the dataset
+rank_names(psN)
+
+# Create table, number of features for each phyla
+table(tax_table(psN)[, "Phylum"], exclude = NULL)
+
+psN0 <- subset_taxa(psN, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+
+phyla2Filter = c("<NA>")
+psN1 = subset_taxa(psN0, !Phylum %in% phyla2Filter)#4% not assigned
+
+phyla2Filter = c("Chloroplast","Rickettsiales")
+psN1 = subset_taxa(psN1, !Order %in% phyla2Filter)
+psN1 #25914 taxa
+rank_names(psN1)
+table(tax_table(psN1)[,"Phylum"], exclude = NULL)
+```
+
+```{r}
+# Transform to relative abundance
+
+# This code keeps raw read counts in the phyloseq object but filters out based on taxa row sums using relative abundance (x/sum(x))
+minTotRelAbun = 1e-5
+
+x = taxa_sums(psF1)
+keepTaxa = (x / sum(x)) > minTotRelAbun  
+psF2 = prune_taxa(keepTaxa, psF1)
+psF2
+
+NtaxaF <- tax_table(psF2)
+
+
+
+x = taxa_sums(psN1)
+keepTaxa = (x / sum(x)) > minTotRelAbun  
+psN2 = prune_taxa(keepTaxa, psN1)
+psN2
+
+NtaxaN <- tax_table(psN2)
+
+```
+
+
+The data.table package will help inform us what the new minimum reads-per-sample is.
+
+```{r}
+library("data.table"); packageVersion("data.table")
+
+sdt = data.table(as(sample_data(ps1), "data.frame"),
+                 TotalReads = sample_sums(ps1), keep.rownames = TRUE)
+```
+
+#Rarefaction curves
+```{r}
+source('ggrarefaction_curves.R')
+library(vegan)
+
+rcurves <- ggrare(psF2, step = 500, se = FALSE)
+ggsave("rcurves_16S_chicks.png", rcurves, height = 10, width = 20)
+```
+
+
+#SRS
+
+```{r}
+set.seed(100)
+library(SRS)
+##Samples should be arranged columnwise
+#SRS.shiny.app(srs.otuF)
+srs.otuF = data.frame(t(otu_table(psF2)))
+
+#SRS.shiny.app(srs.otuN)
+srs.otuN = data.frame(t(otu_table(psN2)))
+```
+
+```{r, fig.height=8, fig.width=20}
+library(ggplotify)
+
+F.curve.plot <- as.ggplot(function() SRScurve(srs.otuF, metric = "richness", step = 100, max.sample.size = 2500,
+          ylab = "Richness", xlab = "Faecal samples", col = "#7D9D33", cex.lab = 1.5)  ) 
+ 
+N.curve.plot <- as.ggplot(function() SRScurve(srs.otuN, metric = "richness", step = 100, max.sample.size = 3000,
+          ylab = "Richness", xlab = "Litter samples", col = "#CD8862", cex.lab = 1.5)  )
+
+F.curve.plot
+
+curve.plots.combined = ggarrange(F.curve.plot, N.curve.plot, labels = c("A","B"), font.label = list(size = 30), 
+          ncol=2, nrow=1)
+curve.plots.combined.title = annotate_figure(curve.plots.combined, top = text_grob("Sub-sampling curves for 16S rRNA gene sequence data", face = "bold", family = "sans", size = 30))
+curve.plots.combined.title
+
+ggsave("SRS.16S.curve.plots.combined.png", curve.plots.combined.title, width = 20, height = 8, dpi = 400, bg = "white")
+```
+
+```{r, fig.height=14, fig.width=10}
+###Faecal###
+SRS_outputF <- SRS(srs.otuF, Cmin = 1200) #4 samples discarded
+SRS_outputF.df = data.frame(t(SRS_outputF))
+
+colnames(SRS_outputF.df) = row.names(srs.otuF)
+SRS_outputF.df = SRS_outputF.df[,order(colSums(SRS_outputF.df),decreasing = T)]
+NtaxaF.df = as.data.frame(NtaxaF)
+to.remove <- setdiff(rownames(NtaxaF.df), colnames(SRS_outputF.df))
+NtaxaF.df = NtaxaF.df[!row.names(NtaxaF.df) %in% to.remove,]
+setdiff(rownames(NtaxaF.df), colnames(SRS_outputF.df))
+identical(rownames(NtaxaF.df), colnames(SRS_outputF.df))
+NtaxaF.df = NtaxaF.df[colnames(SRS_outputF.df),]
+identical(rownames(NtaxaF.df), colnames(SRS_outputF.df))
+NtaxaF.df$ASV_ID <- paste("ASV_", 1:nrow(NtaxaF.df), sep="")
+NtaxaF.df$concat = paste(NtaxaF.df$ASV_ID, NtaxaF.df$Taxonomy, sep = "_")
+rownames(NtaxaF.df) = NtaxaF.df$concat
+colnames(SRS_outputF.df) = rownames(NtaxaF.df)
+NtaxaF.df$ASV_ID = NULL
+NtaxaF.df$concat = NULL
+NtaxaF.df = as.matrix(NtaxaF.df)
+
+
+rownames(SRS_outputF.df) <- gsub(x = rownames(SRS_outputF.df), pattern = "\\.", replacement = "-") 
+
+
+###Nest###
+SRS_outputN <- SRS(srs.otuN, Cmin = 1850) #5 samples discarded
+SRS_outputN.df = data.frame(t(SRS_outputN))
+
+colnames(SRS_outputN.df) = row.names(srs.otuN)
+SRS_outputN.df = SRS_outputN.df[,order(colSums(SRS_outputN.df),decreasing = T)]
+NtaxaN.df = as.data.frame(NtaxaN)
+to.remove <- setdiff(rownames(NtaxaN.df), colnames(SRS_outputN.df))
+NtaxaN.df = NtaxaN.df[!row.names(NtaxaN.df) %in% to.remove,]
+setdiff(rownames(NtaxaN.df), colnames(SRS_outputN.df))
+identical(rownames(NtaxaN.df), colnames(SRS_outputN.df))
+NtaxaN.df = NtaxaN.df[colnames(SRS_outputN.df),]
+identical(rownames(NtaxaN.df), colnames(SRS_outputN.df))
+NtaxaN.df$ASV_ID <- paste("ASV_", 1:nrow(NtaxaN.df), sep="")
+NtaxaN.df$concat = paste(NtaxaN.df$ASV_ID, NtaxaN.df$Taxonomy, sep = "_")
+rownames(NtaxaN.df) = NtaxaN.df$concat
+colnames(SRS_outputN.df) = rownames(NtaxaN.df)
+NtaxaN.df$ASV_ID = NULL
+NtaxaN.df$concat = NULL
+NtaxaN.df = as.matrix(NtaxaN.df)
+
+
+rownames(SRS_outputN.df) <- gsub(x = rownames(SRS_outputN.df), pattern = "\\.", replacement = "-")
+```
+
+```{r}
+write.csv(SRS_outputF.df, "tables/SRS_asv_table_F.csv")
+write.csv(SRS_outputN.df, "tables/SRS_asv_table_N.csv")
+```
+
+
+```{r}
+map.ps2.F <- data.frame(sample_data(psF2))
+f.to.delete <- setdiff(rownames(map.ps2.F), rownames(SRS_outputF.df))
+map.ps2.F = map.ps2.F[!row.names(map.ps2.F) %in% f.to.delete,]
+map.ps2.F$Date <- as.Date(map.ps2.F$Date, format = "%d/%m/%Y")
+map.ps2.F.sort <- dplyr::arrange(map.ps2.F, Name, Date)
+SRS_outputF.df.sort <- SRS_outputF.df[map.ps2.F.sort$SAMPLE.ID,]
+
+psF_SRS = phyloseq(otu_table(SRS_outputF.df.sort, taxa_are_rows = F), 
+                sample_data(map.ps2.F.sort),
+                tax_table(NtaxaF.df))
+
+psF_SRS      #1065 taxa and 287 samples
+psF_SRS_otu = data.frame(otu_table(psF_SRS))
+avg_ASV_F <- data.frame(rowSums(psF_SRS_otu != 0))
+# 1 to 180 mean = 37
+prev_ASV_F <- data.frame(colSums(psF_SRS_otu != 0))
+#ASV_1_Escherichia.Shigella.coli    287
+#ASV_2_Streptococcus.gallolyticus   166
+#ASV_4_Tyzzerella.unclassified      117 
+
+sample_data(psF_SRS)$Age <- factor(sample_data(psF_SRS)$Age, 
+                                         levels = c("<20 days","20--40 days","40--60 days","60--120 days","200+ days","300+ days"),
+                                         labels = c("<20 days","20 - 40 days","40 - 60 days","60 - 120 days","200+ days","300+ days"))
+
+
+
+map.ps2.N <- data.frame(sample_data(psN2))
+n.to.delete <- setdiff(rownames(map.ps2.N), rownames(SRS_outputN.df))
+map.ps2.N = map.ps2.N[!row.names(map.ps2.N) %in% n.to.delete,]
+map.ps2.N$Date <- as.Date(map.ps2.N$Date, format = "%d/%m/%Y")
+map.ps2.N.sort <- dplyr::arrange(map.ps2.N, Name, Date)
+SRS_outputN.df.sort <- SRS_outputN.df[map.ps2.N.sort$SAMPLE.ID,]
+
+psN_SRS = phyloseq(otu_table(SRS_outputN.df.sort, taxa_are_rows = F), 
+                sample_data(map.ps2.N.sort),
+                tax_table(NtaxaN.df))
+
+psN_SRS      # 4403 taxa and 124 samples
+psN_SRS_otu = data.frame(otu_table(psN_SRS))
+avg_ASV_N <- data.frame(rowSums(psN_SRS_otu != 0))
+# 3 to 531 mean = 187
+prev_ASV_N <- data.frame(colSums(psN_SRS_otu != 0))
+#ASV_1_Escherichia.Shigella.coli    124
+#ASV_2_Rahnella1.unclassified       98
+#ASV_7_Rahnella1.unclassified       95
+
+
+sample_data(psN_SRS)$Age <- factor(sample_data(psN_SRS)$Age, 
+                                         levels = c("<20 days","20--40 days","40--60 days","60--90 days"),
+                                         labels = c("<20 days","20 - 40 days","40 - 60 days","60 - 90 days"))
+
+sample_data(psN_SRS)$Name <- factor(sample_data(psN_SRS)$Name, 
+                                          levels = c("ALICE_NEST","ARANGA_NEST","ATARETA_NEST","AWARUA_NEST","BELLA_NEST",
+                                                     "BOOMER_NEST","CYNDY_NEST","ESPERANCE_NEST","EVOHE_NEST","HAUTURU_NEST",
+                                                     "HINEMOA_NEST","HINETAUMAI_NEST","HOKI_NEST","HUHANA_NEST","IHI_NEST",
+                                                     "JEMMA_NEST","KUIA_NEST","KUIHI_NEST","MARAMA_NEST",
+                                                     "MARGARETMAREE_NEST","NORA_NEST","POUNAMU_NEST","PURA_NEST",
+                                                     "QUEENIE_NEST","RA_NEST","RAKIURA_NEST","ROHA_NEST","SUE_NEST",
+                                                     "SUZANNE_NEST","TUMEKE_NEST","WAA_NEST","WAIKAWA_NEST",
+                                                     "WEHEPO_NEST","ZEPHYR_NEST"),
+                                          labels = c("Alice","Aranga","Atareta","Awarua","Bella","Boomer",
+                                                     "Cyndy","Esperance","Evohe","Hauturu","Hinemoa","Hine Taumai",
+                                                     "Hoki","Huhana","Ihi","Jemma","Kuia","Kuihi",
+                                                     "Marama","Margaret-Maree","Nora","Pounamu","Pura","Queenie",
+                                                     "Ra","Rakiura","Roha","Sue","Suzanne","Tumeke","Waa","Waikawa",
+                                                     "Weheruatanga-o-te-po","Zephyr"))
+```
+
+```{r}
+set.seed(100)
+rASV <- rarefy_even_depth(otu_table(ps2, taxa_are_rows = F), sample.size = 1200,replace = FALSE)
+
+rASVF <- rarefy_even_depth(otu_table(psF2, taxa_are_rows = F), sample.size = 1200,replace = FALSE)
+
+rASVN <- rarefy_even_depth(otu_table(psN2, taxa_are_rows = F), sample.size = 1850,replace = FALSE)
+
+psR <- phyloseq(otu_table(rASV, taxa_are_rows = F),
+                sample_data(ps2),
+                tax_table(Ntaxa))
+
+psRF <- phyloseq(otu_table(rASVF, taxa_are_rows = F),
+                sample_data(psF2),
+                tax_table(NtaxaF))
+
+psRN <- phyloseq(otu_table(rASVN, taxa_are_rows = F),
+                sample_data(psN2),
+                tax_table(NtaxaN))
+```
+
+
+#Mantel test
+```{r}
+library(vegan)
+rASV.df = data.frame(rASV)
+rASVF.df = data.frame(rASVF)
+rASVN.df = data.frame(rASVN)
+
+psR.dist = vegan::vegdist(rASV.df, method = "bray")
+srs.dist = vegan::vegdist(SRS_output.df, method = "bray")
+
+mantel(psR.dist, srs.dist, method = "spearman", permutations = 9999)
+
+psRF.dist = vegan::vegdist(rASVF.df, method = "bray")
+srsF.dist = vegan::vegdist(SRS_outputF.df, method = "bray")
+
+mantel(psRF.dist, srsF.dist, method = "spearman", permutations = 9999)
+
+psRN.dist = vegan::vegdist(rASVN.df, method = "bray")
+srsN.dist = vegan::vegdist(SRS_outputN.df, method = "bray")
+
+mantel(psRN.dist, srsN.dist, method = "spearman", permutations = 9999)
+
+```
+
+#Data summaries
+```{r}
+library(dplyr)
+map.f <- data.frame(sample_data(psF_SRS))
+map.n <- data.frame(sample_data(psN_SRS))
+
+pool = c("POOL")
+map.f.np = map.f[!(map.f$Group %in% pool),]
+
+summary_data <- map.f.np %>%
+    group_by(Movement, Name) %>%
+    dplyr::summarise(Count = n()) 
+summary_data
+
+#write.table(summary_data, "faecal_sample_breakdown_bynest.csv")
+#write.table(summary_data, "litter_sample_breakdown_bynest.csv")
+
+map.f %>% dplyr::count(Group)
+map.f %>% dplyr::count(Name)
+map.f.np %>% dplyr::count(Name)
+map.f %>% dplyr::count(Age)
+map.f %>% dplyr::count(Aspergillosis)
+map.f %>% dplyr::count(Nest)
+map.f %>% dplyr::count(Movement)
+map.f %>% dplyr::count(Faecal_experiment)
+map.f %>% dplyr::count(Location)
+map.f %>% dplyr::count(Nest_type)
+
+map.n %>% dplyr::count(Age)
+map.n %>% dplyr::count(Aspergillosis)
+map.n %>% dplyr::count(Nest)
+map.n %>% dplyr::count(Movement)
+map.n %>% dplyr::count(Faecal_experiment)
+map.n %>% dplyr::count(Location)
+map.n %>% dplyr::count(Nest_type)
+```
+
+```{r}
+SRS_asv_tableF<-as.data.frame(t(otu_table(psF_SRS)))
+SRS_taxo_tableF<-as.data.frame(tax_table(psF_SRS))
+SRS_asv_table_wTaxF <- cbind(SRS_asv_tableF, SRS_taxo_tableF)
+
+SRS_asv_tableN<-as.data.frame(t(otu_table(psN_SRS)))
+SRS_taxo_tableN<-as.data.frame(tax_table(psN_SRS))
+SRS_asv_table_wTaxN <- cbind(SRS_asv_tableN, SRS_taxo_tableN)
+```
+
+```{r}
+#Phylum
+Phyla.sumF<-aggregate(SRS_asv_table_wTaxF[,1:287], list(SRS_asv_table_wTaxF$Phylum),sum)
+row.names(Phyla.sumF)<- Phyla.sumF$Group.1
+Phyla.sumF$Group.1 <- NULL
+P_rowsumF <- rowSums(Phyla.sumF)
+write.csv(Phyla.sumF, "tables/Phyla_sumF_per_sample_NC_kakapo.csv")
+write.csv(P_rowsumF, "tables/P_rowsumF_NC_kakapo_fungi.csv")
+
+
+Phyla.sumN<-aggregate(SRS_asv_table_wTaxN[,1:124], list(SRS_asv_table_wTaxN$Phylum),sum)
+row.names(Phyla.sumN)<- Phyla.sumN$Group.1
+Phyla.sumN$Group.1 <- NULL
+P_rowsumN <- rowSums(Phyla.sumN)
+write.csv(Phyla.sumN, "tables/Phyla_sumN_per_sample_NC_kakapo.csv")
+write.csv(P_rowsumN, "tables/P_rowsumN_NC_kakapo.csv")
+
+
+sum(rowSums(Phyla.sumF)) #344400
+rowSums(Phyla.sumF != 0)
+
+sum(rowSums(Phyla.sumN)) #229400
+rowSums(Phyla.sumN != 0)
+```
+
+```{r}
+Genus.sumF <- aggregate(SRS_asv_table_wTaxF[,1:287], list(SRS_asv_table_wTaxF$Genus),sum)
+row.names(Genus.sumF)<- Genus.sumF$Group.1
+Genus.sumF$Group.1 <- NULL
+G_rowsumF <- rowSums(Genus.sumF) 
+write.csv(G_rowsumF, "tables/genus_rowsumF_NC_kakapo.csv")
+write.csv(Genus.sumF, "tables/Genus_sumF_per_sample_NC_kakapo.csv")
+
+Genus.sumN <- aggregate(SRS_asv_table_wTaxN[,1:124], list(SRS_asv_table_wTaxN$Genus),sum)
+row.names(Genus.sumN)<- Genus.sumN$Group.1
+Genus.sumN$Group.1 <- NULL
+G_rowsumN <- rowSums(Genus.sumN) 
+write.csv(G_rowsumN, "tables/genus_rowsumN_NC_kakapo.csv")
+write.csv(Genus.sumN, "tables/Genus_sumN_per_sample_NC_kakapo.csv")
+```
+
+```{r}
+taxa.sumF <- aggregate(SRS_asv_table_wTaxF[,1:287], list(SRS_asv_table_wTaxF$Taxonomy),sum)
+row.names(taxa.sumF)<- taxa.sumF$Group.1
+taxa.sumF$Group.1 <- NULL
+t_rowsumF <- rowSums(taxa.sumF) 
+write.csv(t_rowsumF, "tables/taxa_rowsumF_NC_kakapo.csv")
+write.csv(taxa.sumF, "tables/taxa_sumF_per_sample_NC_kakapo.csv")
+
+taxa.sumN <- aggregate(SRS_asv_table_wTaxN[,1:124], list(SRS_asv_table_wTaxN$Taxonomy),sum)
+row.names(taxa.sumN)<- taxa.sumN$Group.1
+taxa.sumN$Group.1 <- NULL
+t_rowsumN <- rowSums(taxa.sumN) 
+write.csv(t_rowsumN, "tables/taxa_rowsumN_NC_kakapo.csv")
+write.csv(taxa.sumN, "tables/taxa_sumN_per_sample_NC_kakapo.csv")
+```
+
+#PERMANOVA
+###Poo Removal
+```{r}
+library(vegan)
+set.seed(100)
+
+#Faecal
+psF_UKsubset <- subset_samples(psF_SRS, Faecal_experiment != "Unknown")
+permanova.dis.F.UK <- distance(psF_UKsubset, "bray")
+map.F.UK <- data.frame(sample_data(psF_UKsubset))
+adonis2(permanova.dis.F.UK ~ Faecal_experiment, map.F.UK, 
+        permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=map.F.UK$Name)))
+
+beta.pooR <- vegan::betadisper(permanova.dis.F.UK, map.F.UK$Faecal_experiment)
+beta.pooR
+vegan::permutest(beta.pooR,permutations = how(nperm = 9999))
+beta.pooR.df <- data.frame(beta.pooR$distances)
+beta.pooR.df$Group = beta.pooR$group
+dunn.test::dunn.test(beta.pooR.df$beta.pooR.distances, beta.pooR.df$Group, method = "bh")
+
+psF_UK_HRsubset <- subset_samples(psF_SRS, Faecal_experiment != "Unknown" & Faecal_experiment != "Hand rearing")
+permanova.dis.F.UK.HR <- distance(psF_UK_HRsubset, "bray")
+map.F.UK.HR <- data.frame(sample_data(psF_UK_HRsubset))
+adonis2(permanova.dis.F.UK.HR ~ Faecal_experiment, map.F.UK.HR, 
+        permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=map.F.UK.HR$Name)))
+
+#Nest
+psN_UKsubset <- subset_samples(psN_SRS, Faecal_experiment != "Unknown")
+map.N.UK <- data.frame(sample_data(psN_UKsubset))
+permanova.dis.N.UK <- phyloseq::distance(psN_UKsubset, "bray")
+adonis2(permanova.dis.N.UK ~ Faecal_experiment, map.N.UK, 
+        permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=map.N.UK$Name)))
+
+beta.pooR.N <- vegan::betadisper(permanova.dis.N.UK, map.N.UK$Faecal_experiment)
+beta.pooR.N
+vegan::permutest(beta.pooR.N) 
+beta.pooR.N.df <- data.frame(beta.pooR.N$distances)
+beta.pooR.N.df$Group = beta.pooR.N$group
+dunn.test::dunn.test(beta.pooR.N.df$beta.pooR.N.distances, beta.pooR.N.df$Group, method = "bh")
+```
+
+#####BC boxplots
+
+```{r}
+boxplot_theme <- theme_ipsum() + theme(plot.title = element_text(size = 26),
+  
+          plot.subtitle = element_text(size = 24),
+          
+          axis.text.x = element_blank(),
+
+          axis.title.x = element_text(size=20),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_text(size=18),
+
+          axis.title.y=element_text(size=20),
+
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_line(color="black",size=1.0,linetype=1),
+
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5, 5, 5, 5),
+
+          legend.position="bottom",
+
+          legend.title = element_text(face = "bold", size = 24),
+          
+          legend.text = element_text(size = 20))
+```
+
+
+
+```{r fig.height= 10, fig.width=12}
+library(vegan)
+library(reshape2)
+library(pairwiseAdonis)
+
+otu_split.F <- data.frame(otu_table(psF_UKsubset))
+rownames(otu_split.F) <- map.F.UK$Date_Name
+otu_split.F1.BC <- split(otu_split.F, map.F.UK$Faecal_experiment)
+
+dist.list.f.bc<- c() 
+
+for (i in 1:length(otu_split.F1.BC)) {
+     dist.list.f.bc[[i]] <- as.matrix(vegdist(otu_split.F1.BC[[i]], method = "bray"))
+}
+
+names(dist.list.f.bc) = names(otu_split.F1.BC)
+df.f.bc <- melt(dist.list.f.bc)
+names(df.f.bc) <- c("Sample1", "Sample2", "BCdistance","Faecal_experiment")
+
+df.f.bc$match = df.f.bc$Sample1 == df.f.bc$Sample2
+df.f.bc.2 = df.f.bc[-which(df.f.bc$match == "TRUE"),]
+
+
+source('pairwiseAdonis3.R')
+## Permutes within chick and uses "series" permutation
+pairwise.adonis3(permanova.dis.F.UK ~ Faecal_experiment, data = map.F.UK,  p.adjust.m = 'BH', strata = "Name", nperm = 9999, within_type = "series")
+
+
+faecal.bc <- data.frame(start=c("Faeces in","Faeces removed","Hand rearing"), 
+                            end=c("Hand rearing","Hand rearing","Mixed"),
+                            y=c(1.3,1.15,1.1),
+                            label=c("0.002**","0.02*","0.009**"))
+
+
+faecal.bc.boxplot <- ggplot(df.f.bc.2,aes(x = Faecal_experiment, y = BCdistance)) + 
+  geom_jitter(position = position_jitter(0.3), aes(color = Faecal_experiment), alpha = 0.75) +
+  geom_boxplot(size=1.0, fill='transparent') + 
+  boxplot_theme +
+  guides(colour = guide_legend(override.aes = list(size=6))) +
+  labs(x = "Faecal experiment", y = "Bray-Curtis dissimilarity") +
+  ggtitle("Faecal samples", subtitle =  "PERMANOVA p < 0.001***") +
+  scale_color_manual(name = "Bray-Curtis distances",values= get_pal("Kakapo")) +
+  geom_signif(data=faecal.bc,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6)
+faecal.bc.boxplot
+
+
+faecal.bc.boxplot.nojitter <- ggplot(df.f.bc.2,aes(x = Faecal_experiment, y = BCdistance)) + 
+  geom_boxplot(size=1.0, aes(fill = Faecal_experiment)) + 
+  boxplot_theme +
+  labs(x = "Faecal experiment groups", y = "Bray-Curtis dissimilarity") +
+  ggtitle("Faecal samples", subtitle =  "PERMANOVA p < 0.001***") +
+  scale_fill_manual(name = "Bray-Curtis distances",values= get_pal("Kakapo")) +
+  geom_signif(data=faecal.bc,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6)
+faecal.bc.boxplot.nojitter
+#ggsave("boxplots/bc_faecal_pooR_nojitter.png", faecal.bc.boxplot.nojitter, height = 10, width = 12, dpi = 400)
+```
+
+```{r fig.height= 10, fig.width=12}
+otu_split.N <- data.frame(otu_table(psN_UKsubset))
+rownames(otu_split.N) <- map.N.UK$Date_Name
+otu_split.N1.BC <- split(otu_split.N, map.N.UK$Faecal_experiment)
+
+dist.list.n.bc<- c() 
+
+for (i in 1:length(otu_split.N1.BC)) {
+     dist.list.n.bc[[i]] <- as.matrix(vegdist(otu_split.N1.BC[[i]], method = "bray"))
+}
+
+names(dist.list.n.bc) = names(otu_split.N1.BC)
+df.n.bc <- melt(dist.list.n.bc)
+names(df.n.bc) <- c("Sample1", "Sample2", "BCdistance","Faecal_experiment")
+
+df.n.bc$match = df.n.bc$Sample1 == df.n.bc$Sample2
+df.n.bc.2 = df.n.bc[-which(df.n.bc$match == "TRUE"),]
+
+litter.bc.boxplot <- ggplot(df.n.bc.2,aes(x = Faecal_experiment, y = BCdistance)) + 
+  geom_jitter(position = position_jitter(0.3), aes(color = Faecal_experiment), alpha = 0.75) +
+  geom_boxplot(size=1.0, fill='transparent') + 
+  boxplot_theme +
+  guides(colour = guide_legend(override.aes = list(size=6))) +
+  labs(x = "Faecal experiment", y = "Bray-Curtis dissimilarity distances") +
+  ggtitle("Litter samples", subtitle =  "PERMANOVA p = 1") +
+  scale_color_manual(name = "Faecal removal",values= get_pal("Kakapo")) 
+litter.bc.boxplot
+
+litter.bc.boxplot.nojitter <- ggplot(df.n.bc.2,aes(x = Faecal_experiment, y = BCdistance)) + 
+  geom_boxplot(size=1.0, aes(fill = Faecal_experiment)) + 
+  boxplot_theme +
+  labs(x = "Faecal experiment groups", y = "Bray-Curtis dissimilarity") +
+  ggtitle("Litter samples", subtitle =  "PERMANOVA p = 1") +
+  scale_fill_manual(name = "Bray-Curtis distances",values= get_pal("Kakapo")) 
+litter.bc.boxplot.nojitter
+#ggsave("boxplots/bc_litter_pooR_nojitter.png", litter.bc.boxplot.nojitter, height = 10, width = 12, dpi = 400)
+```
+
+```{r fig.height= 10, fig.width=24}
+bc.boxplots.combined = ggarrange(faecal.bc.boxplot.nojitter, litter.bc.boxplot.nojitter, labels = c("A","B"), font.label = list(size = 30), 
+          ncol=2, nrow=1)
+bc.boxplots.combined
+ggsave("boxplots/bc_boxplots_combined_nojitter_20JUN2022.png", bc.boxplots.combined, width = 24, height = 10, dpi = 400)
+```
+
+```{r fig.height= 13, fig.width=24}
+bc.boxplots.combined = ggarrange(faecal.bc.boxplot.nojitter, litter.bc.boxplot.nojitter, labels = c("B"), font.label = list(size = 30), 
+          ncol=2, nrow=1, common.legend = T, legend = c("bottom"))
+bc.boxplots.combined
+```
+
+
+###Faecal
+```{r}
+set.seed(100)
+###FAECAL###
+permanova.dis.F <- distance(psF_SRS, "bray")
+adonis.map.F <- data.frame(sample_data(psF_SRS))
+
+#Faecal removal including HR + unknown
+vegan::adonis2(permanova.dis.F ~ Faecal_experiment, adonis.map.F,
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+pairwise.adonis3(permanova.dis.F ~ Faecal_experiment, data = adonis.map.F,  p.adjust.m = 'BH', strata = "Name", nperm = 9999, within_type = "series") #only hand-rearing significant
+
+#Movement
+vegan::adonis2(permanova.dis.F ~ Movement, adonis.map.F,
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+beta.m <- vegan::betadisper(permanova.dis.F, adonis.map.F$Movement)
+beta.m
+vegan::permutest(beta.m, permutations = how(nperm = 9999))
+
+#Location
+vegan::adonis2(permanova.dis.F ~ Location, adonis.map.F, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+vegan::adonis2(permanova.dis.F ~ Location + Nest, adonis.map.F, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+pairwise.adonis3(permanova.dis.F ~ Location, data = adonis.map.F, p.adjust.m = 'BH', strata = "Name", nperm = 9999, within_type = "series")
+
+beta.l <- vegan::betadisper(permanova.dis.F, adonis.map.F$Location)
+beta.l
+vegan::permutest(beta.l, permutations = how(nperm = 9999)) #0.0001
+
+beta.l.df <- data.frame(beta.l$distances)
+beta.l.df$Group = beta.l$group
+dunn.test::dunn.test(beta.l.df$beta.l.distances, beta.l.df$Group, method = "bh")
+
+psF_sub <- subset_samples(psF, Location != "Hand rearing")
+dis.F.L.sub <- distance(psF_sub, "bray")
+map.F.L.sub <- data.frame(sample_data(psF_sub))
+vegan::adonis2(dis.F.L.sub ~ Location, map.F.L.sub, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=map.F.L.sub$Name)))
+
+#Age
+vegan::adonis2(permanova.dis.F ~ Age, adonis.map.F, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+vegan::adonis2(disF.sub ~ Age, mapF.sub, 
+               permutations = how(nperm = 999, within=Within(type="series"), plots=Plots(strata=mapF.sub$Name)))
+
+pairwise.adonis3(permanova.dis.F ~ Age, data = adonis.map.F, p.adjust.m = 'BH', strata = "Name", nperm = 9999, within_type = "series")
+
+beta.age <- vegan::betadisper(permanova.dis.F, adonis.map.F$Age)
+beta.age
+vegan::permutest(beta.age) 
+
+beta.age.df <- data.frame(beta.age$distances)
+beta.age.df$Group = beta.age$group
+dunn.test::dunn.test(beta.age.df$beta.age.distances, beta.age.df$Group, method = "bh")
+                          
+#Aspergillosis
+vegan::adonis2(permanova.dis.F ~ Aspergillosis, adonis.map.F, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+
+beta.asp <- vegan::betadisper(permanova.dis.F, adonis.map.F$Aspergillosis)
+beta.asp
+vegan::permutest(beta.asp, permutations = how(nperm = 9999))
+
+#Nest type (no sub-adult samples)
+psF_sub_NT <- subset_samples(psF_SRS, Nest_type != "Sub-adult samples") 
+disF.sub.NT <- distance(psF_sub_NT, "bray")
+mapF.sub.NT <- data.frame(sample_data(psF_sub_NT))
+vegan::adonis2(disF.sub.NT ~ Nest_type, mapF.sub.NT, 
+              permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=mapF.sub.NT$Name)))
+
+pairwise.adonis3(disF.sub.NT ~ Nest_type, data = mapF.sub.NT, p.adjust.m = "BH", strata = "Name", nperm = 9999, within_type = "series")
+
+beta.nt <- vegan::betadisper(disF.sub.NT, mapF.sub.NT$Nest_type)
+beta.nt
+vegan::permutest(beta.nt, permutations = how(nperm = 9999)) 
+
+##No sub-adult or hand-rearing samples
+psF_sub_NT_HR <- subset_samples(psF_SRS, Nest != "Sub-adult samples" & Nest != "Hand rearing")
+disF.sub.NT_HR <- distance(psF_sub_NT_HR, "bray")
+mapF.sub.NT_HR <- data.frame(sample_data(psF_sub_NT_HR))
+vegan::adonis2(disF.sub.NT_HR ~ Nest + Nest_type, mapF.sub.NT_HR, by = "term",
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=mapF.sub.NT_HR$Name)))
+
+pairwise.adonis3(disF.sub.NT_HR ~ Nest_type, data = mapF.sub.NT_HR, p.adjust.m = "BH", strata = "Name", nperm = 999, within_type = "series")
+
+#Nest
+##No sub-adult samples
+vegan::adonis2(disF.sub.NT ~ Nest, mapF.sub.NT, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=mapF.sub.NT$Name)))
+
+nest.pairwise.nosubadult <- pairwise.adonis3(disF.sub.NT ~ Nest, data = mapF.sub.NT, p.adjust.m = 'BH', strata = "Name", nperm = 999, within_type = "series")
+nests.null = Filter(is.null, nest.pairwise.nosubadult) 
+nest.pairwise.nosubadult.subset <- within(nest.pairwise.nosubadult, rm(Ihi_vs_Esperance,Ihi_vs_Yasmine,Esperance_vs_Yasmine))
+write.table(nest.pairwise.nosubadult.subset, "tables/faecal_nest_nosubAdult_adonis_pairwise_comparisons.csv") 
+
+beta.n <- vegan::betadisper(disF.sub.NT, mapF.sub.NT$Nest)
+beta.n
+vegan::permutest(beta.n, permutations = how(nperm = 9999)) 
+
+##No sub-adult or hand-rearing samples
+vegan::adonis2(disF.sub.NT_HR ~ Nest, mapF.sub.NT_HR, by = "term",
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=mapF.sub.NT_HR$Name)))
+
+nest.pairwise.noHR.nosubAdult <- pairwise.adonis3(disF.sub.NT_HR ~ Nest, data = mapF.sub.NT_HR, p.adjust.m = 'BH', strata = "Name", nperm = 999, within_type = "series")
+nest.pairwise.noHR.nosubAdult.subset <- within(nest.pairwise.noHR.nosubAdult, rm(Ihi_vs_Esperance,Ihi_vs_Yasmine,Esperance_vs_Yasmine))
+write.table(nest.pairwise.noHR.nosubAdult.subset, "tables/faecal_nest_noHRorSubAdult_adonis_pairwise_comparisons.csv") # 
+
+#Chick
+vegan::adonis2(permanova.dis.F ~ Nest + Name, adonis.map.F, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.F$Name)))
+```
+
+```{r}
+p.f.perm.hr <- c("0.0001","0.5","0.0001","0.0001","1","0.0001","0.0001","1")
+p.f.perm <- c("1","0.53","0.06","0.0001")
+
+
+p.adjust(p.f.perm.hr, method = "BH")
+p.adjust(p.f.perm, method = "BH")
+
+
+p.beta.f <- c("0.0001","0.005","0.0001","0.0001","0.0001","0.04")
+p.adjust(p.beta.f, method = "BH")
+```
+
+
+###Litter
+```{r}
+###NEST###
+adonis.map.N <- data.frame(sample_data(psN_SRS))
+permanova.dis.N <- phyloseq::distance(psN_SRS, "bray")
+
+#Movement
+vegan::adonis2(permanova.dis.N ~ Movement, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+beta.M.L <- vegan::betadisper(permanova.dis.N, adonis.map.N$Movement)
+beta.M.L
+vegan::permutest(beta.M.L) 
+
+#Island
+vegan::adonis2(permanova.dis.N ~ Location, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+beta.I.L <- vegan::betadisper(permanova.dis.N, adonis.map.N$Location)
+beta.I.L
+vegan::permutest(beta.I.L) 
+
+#Days since first chick
+vegan::adonis2(permanova.dis.N ~ Age, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+pairwise.adonis3(permanova.dis.N ~ Age, data = adonis.map.N, p.adjust.m = 'BH', strata = "Name", nperm = 9999, within_type = "series")
+
+beta.age.L <- vegan::betadisper(permanova.dis.N, adonis.map.N$Age)
+beta.age.L
+vegan::permutest(beta.age.L, permutations = how(nperm = 9999)) 
+
+beta.age.L.df <- data.frame(beta.age.L$distances)
+beta.age.L.df$Group = beta.age.L$group
+dunn.test::dunn.test(beta.age.L.df$beta.age.L.distances, beta.age.L.df$Group, method = "bh")
+
+
+#Aspergillosis
+vegan::adonis2(permanova.dis.N ~ Aspergillosis, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+beta.asp.L <- vegan::betadisper(permanova.dis.N, adonis.map.N$Aspergillosis)
+beta.asp.L
+vegan::permutest(beta.asp.L, permutations = how(nperm = 9999))
+
+#Nest type
+vegan::adonis2(permanova.dis.N ~ Nest_type, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+beta.NT.L <- vegan::betadisper(permanova.dis.N, adonis.map.N$Nest_type)
+beta.NT.L
+vegan::permutest(beta.NT.L, permutations = how(nperm = 9999))
+
+#Nest
+vegan::adonis2(permanova.dis.N ~ Nest, adonis.map.N, 
+               permutations = how(nperm = 9999, within=Within(type="series"), plots=Plots(strata=adonis.map.N$Name)))
+
+```
+
+
+```{r}
+p.beta.L <- c("0.79","0.001","0.001","0.49","0.38","0.03")
+p.adjust(p.beta.L, method = "BH")
+```
+
+
+##Taxa plots
+
+
+```{r}
+taxaplot_theme <-  theme_ipsum() + theme(plot.title = element_text(size = 35),
+  
+          axis.text.x = element_blank(),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_text(size=25),
+
+          axis.title.y=element_text(size=35),
+          
+          axis.title.x = element_text(size=35),
+          
+          strip.text.x = element_text(size = 28),
+
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5, 5, 5, 5),
+
+          legend.position="bottom",
+
+          legend.title = element_text(face = "bold", size = 35),
+          
+          legend.text = element_text(size = 30))
+
+```
+
+###Faecal
+```{r fig.cap = "K\u101k\u101p\u14d phylum others taxonomic plot", fig.height = 8, fig.width = 12, dpi=300}
+library(plyr); packageVersion("plyr")
+# get abundance in %
+psF_RA <- transform_sample_counts(psF_SRS, function(x) x/sum(x))
+psN_RA <- transform_sample_counts(psN_SRS, function(x) x/sum(x))
+```
+```{r}
+glom_f <- tax_glom(psF_RA, taxrank = 'Taxonomy')
+
+df_f <- psmelt(glom_f)
+df_f$Taxonomy <- as.character(df_f$Taxonomy)
+means_f <- ddply(df_f, ~Taxonomy, function(x) c(mean=mean(x$Abundance)))
+remainder_f <- means_f[means_f$mean <= 0.003,]$Taxonomy 
+df_f[df_f$Taxonomy %in% remainder_f,]$Taxonomy <- 'Other species <0.3%' 
+
+print(levels(factor(df_f$Taxonomy)))
+```
+
+```{r fig.height = 20, fig.width = 40, dpi=300}
+faecal.taxa.col <- c("#8c78a5","#9a4d76","#deceed","#F9ECA0","#f4de58","#85CA95","#33605d","#CAE0AB","#F6C141","#FF0F39","#ffb7c3","#ac2847","#7f5156","#e2dfdf","#b0fff1","#7BAFDE","#4f7190","#9f9f9f")
+
+faecal_taxa <- ggplot(data=df_f, aes(x=Sample_Name, y=Abundance,  
+                                         fill = factor(Taxonomy, 
+                                                       c("Acinetobacter bouvetii","Acinetobacter lwoffii","Clostridium sensu stricto 1 baratii",
+                                                         "Clostridium sensu stricto 1 perfringens","Clostridium sensu stricto 1 unclassified",
+                                                         "Curvibacter lanceolatus","Enterococcus faecalis","Escherichia-Shigella coli",
+                                                         "Escherichia-Shigella unclassified","Lactobacillus gasseri","Lactobacillus pontis",
+                                                         "Pseudomonas putida","Pseudomonas unclassified","Rahnella1 unclassified",
+                                                         "Rhodanobacter unclassified","Streptococcus gallolyticus","Tyzzerella unclassified","Other species <0.3%"))))
+
+faecal_taxa_plotbar <- faecal_taxa + geom_bar(aes(), stat="identity", position="fill", width = 1)  + 
+    guides(fill=guide_legend(title="Species", nrow = 6)) + taxaplot_theme + 
+    theme(axis.title.y = element_blank(), axis.text.y = element_blank()) + 
+    labs(x="K\u101k\u101p\u14d faecal samples") + 
+    facet_grid(.~Age, scales = "free_x", space='free') +
+    scale_fill_manual(values = faecal.taxa.col)
+faecal_taxa_plotbar
+
+faecal_taxa_plotbar.L <- faecal_taxa + geom_bar(aes(), stat="identity", position="fill", width = 1)  + 
+    guides(fill=guide_legend(title="Species", nrow = 6)) + taxaplot_theme + 
+    labs(y="Relative sequence abundance      ", x = "K\u101k\u101p\u14d faecal samples") + 
+    facet_grid(.~Location, scales = "free_x", space='free') +
+    scale_fill_manual(values = faecal.taxa.col)
+faecal_taxa_plotbar.L
+#ggsave("faecal_taxa_plotbar_location.png", faecal_taxa_plotbar, height = 15, width = 28, dpi = 400)
+
+
+faecal_taxa_plotbar_age <- ggplot(data=df_f, 
+                                  aes(x=Age, y=Abundance,  
+                                      fill = factor(Taxonomy, 
+                                                  c("Acinetobacter bouvetii","Acinetobacter lwoffii","Clostridium sensu stricto 1 baratii",
+                                                    "Clostridium sensu stricto 1 perfringens","Clostridium sensu stricto 1 unclassified",
+                                                    "Curvibacter lanceolatus","Enterococcus faecalis","Escherichia-Shigella coli",
+                                                    "Escherichia-Shigella unclassified","Lactobacillus gasseri","Lactobacillus pontis",
+                                                    "Pseudomonas putida","Pseudomonas unclassified","Rahnella1 unclassified",
+                                                    "Rhodanobacter unclassified","Streptococcus gallolyticus","Tyzzerella unclassified",
+                                                    "Other species <0.3%")))) + 
+    geom_bar(aes(), stat="identity", position="fill", width = 3)  + 
+    guides(fill=guide_legend(title="Species", nrow = 6)) + taxaplot_theme +
+    theme(strip.text.x = element_blank()) +
+    ggtitle("Faecal samples by k\u101k\u101p\u14d chick age") +
+    labs(y="Relative sequence abundance      ", x = "Age groups") +  
+    facet_grid(.~Age, scales = "free_x", space='free') +
+    scale_fill_manual(values = faecal.taxa.col)
+
+faecal_taxa_plotbar_age
+```
+
+###Litter
+```{r}
+glom_nest.T <- tax_glom(psN_RA, taxrank = 'Taxonomy')
+
+df_nest.T <- psmelt(glom_nest.T)
+df_nest.T$Taxonomy <- as.character(df_nest.T$Taxonomy)
+means_nest.T <- ddply(df_nest.T, ~Taxonomy, function(x) c(mean=mean(x$Abundance)))
+remainder_nest.T <- means_nest.T[means_nest.T$mean <= 0.005,]$Taxonomy 
+df_nest.T[df_nest.T$Taxonomy %in% remainder_nest.T,]$Taxonomy <- 'Other species <0.5%' 
+
+print(levels(factor(df_nest.T$Taxonomy)))
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d species others taxonomic plot", fig.height = 15, fig.width = 40, dpi=300}
+nest.taxa.col <- c("#402751","#a593a5","#666092","#429058","#8fde5d","#0b5e65","#414c15","#CAE0AB","#F6C141","#c09473","#fbff86","#E8601C","#ffb570","#b0305c","#c878af","#ffd1d5","#6b2643","#ac2847","#ffa2ac","#7f5156","#e2dfdf","#3c9f9c","#253a5e","#b0fff1","#168fea","#1321d3","#b1d8d7","#7BAFDE","#9f9f9f")
+
+taxa_plot_nest <- ggplot(data=df_nest.T, 
+                         aes(x=Sample_Name, y=Abundance,  
+                             fill = factor(Taxonomy, 
+                                           c("Acidipila unclassified","Acidisoma unclassified","Acidocella unclassified",
+                                             "Acinetobacter pragensis","Arachidicoccus unclassified",
+                                             "Burkholderia-Caballeronia-Paraburkholderia unclassified",
+                                             "Dyella unclassified","Escherichia-Shigella coli","Escherichia-Shigella unclassified",
+                                             "Flavobacterium unclassified","Granulicella unclassified","Klebsiella oxytoca",
+                                             "Mucilaginibacter unclassified","Novosphingobium resinovorum","Novosphingobium rosa",
+                                             "Novosphingobium unclassified","Occallatibacter unclassified","Pantoea rwandensis",
+                                             "Pseudomonas mohnii","Pseudomonas unclassified","Rahnella1 unclassified",
+                                             "Raoultella planticola","Raoultella terrigena","Rhodanobacter unclassified",
+                                             "Roseiarcus unclassified","Serratia plymuthica","Serratia unclassified",
+                                             "Streptococcus gallolyticus", "Other species <0.5%")))) + 
+    geom_bar(aes(), stat="identity", position="fill", width = 1)  + 
+    guides(fill=guide_legend(title="Species", nrow = 5)) + taxaplot_theme + 
+    theme(axis.title.y = element_blank(),axis.text.y = element_blank()) + 
+    labs(x="Nest litter samples") +
+    facet_grid(.~Age, scales = "free_x", space='free') +
+    scale_fill_manual(values = nest.taxa.col)
+taxa_plot_nest
+
+
+taxa_plot_nest_age <- ggplot(data=df_nest.T, 
+                         aes(x=Age, y=Abundance,  
+                             fill = factor(Taxonomy, 
+                                           c("Acidipila unclassified","Acidisoma unclassified","Acidocella unclassified",
+                                             "Acinetobacter pragensis","Arachidicoccus unclassified",
+                                             "Burkholderia-Caballeronia-Paraburkholderia unclassified",
+                                             "Dyella unclassified","Escherichia-Shigella coli","Escherichia-Shigella unclassified",
+                                             "Flavobacterium unclassified","Granulicella unclassified","Klebsiella oxytoca",
+                                             "Mucilaginibacter unclassified","Novosphingobium resinovorum","Novosphingobium rosa",
+                                             "Novosphingobium unclassified","Occallatibacter unclassified","Pantoea rwandensis",
+                                             "Pseudomonas mohnii","Pseudomonas unclassified","Rahnella1 unclassified",
+                                             "Raoultella planticola","Raoultella terrigena","Rhodanobacter unclassified",
+                                             "Roseiarcus unclassified","Serratia plymuthica","Serratia unclassified",
+                                             "Streptococcus gallolyticus", "Other species <0.5%")))) + 
+    geom_bar(aes(), stat="identity", position="fill", width = 1.5)  + 
+    guides(fill=guide_legend(title="Species", nrow = 5)) + taxaplot_theme + 
+    ggtitle("Litter samples by days since first chick") +
+    theme(strip.text.x = element_blank()) +
+    labs(y="Relative sequence abundance      ", x = "Temporal groups") +
+    facet_wrap(~Age, scales = "free_x", nrow=1) +
+    scale_fill_manual(values = nest.taxa.col)
+taxa_plot_nest_age
+```
+
+
+```{r fig.height = 30, fig.width = 42, dpi=300}
+taxa.f = ggarrange(faecal_taxa_plotbar_age, faecal_taxa_plotbar,  
+          ncol=2, nrow=1, common.legend = T, legend = "bottom", widths = c(0.25,1))
+taxa.f
+
+taxa.n = ggarrange(taxa_plot_nest_age, taxa_plot_nest, 
+          ncol=2, nrow=1, common.legend = T, legend = "bottom", widths = c(0.27,1))
+taxa.n
+
+taxa.combined = ggarrange(taxa.f, NULL, taxa.n, nrow = 3, labels = c("A","B"), font.label = list(size = 30), heights = c(1, 0.02, 1))
+taxa.combined
+#ggsave("barplot_taxa_age_combined_feb2022.png", taxa.combined, height = 30, width = 40, dpi=400, bg = "white")
+```
+
+
+##Alpha Diversity
+
+Use phyloseq's estimate_richness function to get desired diversity estimates.
+
+###Faecal
+
+```{r}
+rich_psF <- estimate_richness(psF_SRS, measures = c("InvSimpson","Shannon","Observed"))
+richF <- list(rich_psF, sample_data(psF_SRS)$Faecal_experiment, sample_data(psF_SRS)$Movement, sample_data(psF_SRS)$Location, sample_data(psF_SRS)$Age, sample_data(psF_SRS)$Aspergillosis,  sample_data(psF_SRS)$Nest_type, sample_data(psF_SRS)$Nest, sample_data(psF_SRS)$Name, sample_data(psF_SRS)$Sample_Name, sample_data(psF_SRS)$Name_Sample)
+names(richF) <- c("alpha_diversity", "Faecal_experiment", "Movement", "Location", "Age", "Aspergillosis", "Nest_type", "Nest", "Name", "Sample_Name","Name_Sample")
+
+shapiro.test(richF$alpha_diversity$InvSimpson) 
+shapiro.test(richF$alpha_diversity$Shannon)
+shapiro.test(richF$alpha_diversity$Observed) 
+
+#Faecal experiment
+rich_psF_UKsubset = estimate_richness(psF_UKsubset, measures = c("InvSimpson","Shannon","Observed"))
+richF_UK = list(rich_psF_UKsubset, sample_data(psF_UKsubset)$Faecal_experiment)
+names(richF_UK) <- c("alpha_diversity", "Faecal_experiment")
+
+shapiro.test(richF_UK$alpha_diversity$InvSimpson)
+shapiro.test(richF_UK$alpha_diversity$Shannon) 
+shapiro.test(richF_UK$alpha_diversity$Observed) 
+
+kruskal.test(richF_UK$alpha_diversity$InvSimpson, richF_UK$Faecal_experiment) 
+kruskal.test(richF_UK$alpha_diversity$Shannon, richF_UK$Faecal_experiment)
+kruskal.test(richF_UK$alpha_diversity$Observed, richF_UK$Faecal_experiment) 
+
+psF_UK_HRsubset <- subset_samples(psF_UKsubset, Faecal_experiment != "Hand rearing")
+rich_psF_UK_HRsubset <- estimate_richness(psF_UK_HRsubset, measures = c("Observed","InvSimpson"))
+rich_psF_UK_HR <- list(rich_psF_UK_HRsubset, sample_data(psF_UK_HRsubset)$Faecal_experiment)
+names(rich_psF_UK_HR) <- c("alpha_diversity", "Faecal_experiment")
+
+kruskal.test(rich_psF_UK_HR$alpha_diversity$Observed, rich_psF_UK_HR$Faecal_experiment) 
+kruskal.test(rich_psF_UK_HR$alpha_diversity$InvSimpson, rich_psF_UK_HR$Faecal_experiment)
+
+                                          
+#Movement
+kruskal.test(richF$alpha_diversity$InvSimpson, richF$Movement) 
+kruskal.test(richF$alpha_diversity$Shannon, richF$Movement)
+kruskal.test(richF$alpha_diversity$Observed, richF$Movement) 
+
+#Location
+kruskal.test(richF$alpha_diversity$InvSimpson, richF$Location)
+kruskal.test(richF$alpha_diversity$Shannon, richF$Location)
+kruskal.test(richF$alpha_diversity$Observed, richF$Location)
+
+rich_psF_Loc = estimate_richness(psF_sub, measures = c("InvSimpson","Shannon","Observed"))
+richF_Location = list(rich_psF_Loc, sample_data(psF_sub)$Location)
+names(richF_Location) <- c("alpha_diversity", "Island")
+
+kruskal.test(richF_Location$alpha_diversity$InvSimpson, richF_Location$Island) 
+kruskal.test(richF_Location$alpha_diversity$Shannon, richF_Location$Island)
+kruskal.test(richF_Location$alpha_diversity$Observed, richF_Location$Island)
+
+#Age
+kruskal.test(richF$alpha_diversity$InvSimpson, richF$Age) 
+kruskal.test(richF$alpha_diversity$Shannon, richF$Age)
+kruskal.test(richF$alpha_diversity$Observed, richF$Age)
+
+#Aspergillosis
+kruskal.test(richF$alpha_diversity$InvSimpson, richF$Aspergillosis) 
+kruskal.test(richF$alpha_diversity$Shannon, richF$Aspergillosis)
+kruskal.test(richF$alpha_diversity$Observed, richF$Aspergillosis)
+
+#Nest type
+##No HR or sub-adult
+rich_psF_Nest <- estimate_richness(psF_sub_NT, measures = c("InvSimpson","Shannon","Observed"))
+richF_Nest <- list(rich_psF_Nest, sample_data(psF_sub_NT)$Nest_type, sample_data(psF_sub_NT)$Nest)
+names(richF_Nest) = c("alpha_diversity","Nest_type","Nest")
+
+kruskal.test(richF_Nest$alpha_diversity$InvSimpson, richF_Nest$Nest_type) 
+kruskal.test(richF_Nest$alpha_diversity$Shannon, richF_Nest$Nest_type)
+kruskal.test(richF_Nest$alpha_diversity$Observed, richF_Nest$Nest_type)
+
+##With HR
+rich_psF_Nest_HR <- estimate_richness(psF_sub_NT, measures = c("InvSimpson","Shannon","Observed"))
+richF_Nest_HR <- list(rich_psF_Nest_HR, sample_data(psF_sub_NT)$Nest_type, sample_data(psF_sub_NT)$Nest)
+names(richF_Nest_HR) = c("alpha_diversity","Nest_type","Nest")
+
+kruskal.test(richF_Nest_HR$alpha_diversity$InvSimpson, richF_Nest_HR$Nest_type) 
+kruskal.test(richF_Nest_HR$alpha_diversity$Shannon, richF_Nest_HR$Nest_type)
+kruskal.test(richF_Nest_HR$alpha_diversity$Observed, richF_Nest_HR$Nest_type)
+
+#Nest
+kruskal.test(richF_Nest_HR$alpha_diversity$InvSimpson, richF_Nest_HR$Nest) 
+kruskal.test(richF_Nest_HR$alpha_diversity$Shannon, richF_Nest_HR$Nest)
+kruskal.test(richF_Nest_HR$alpha_diversity$Observed, richF_Nest_HR$Nest)
+
+#Chick
+kruskal.test(richF$alpha_diversity$InvSimpson, richF$Name) 
+kruskal.test(richF$alpha_diversity$Shannon, richF$Name)
+kruskal.test(richF$alpha_diversity$Observed, richF$Name)
+```
+
+```{r}
+library(dunn.test); packageVersion("dunn.test")
+
+dunn.test(richF_UK$alpha_diversity$InvSimpson, richF_UK$Faecal_experiment, method = "bh")
+dunn.test(richF_UK$alpha_diversity$Observed, richF_UK$Faecal_experiment, method = "bh") 
+
+dunn.test(richF$alpha_diversity$Observed, richF$Location, method = "bh") 
+dunn.test(richF$alpha_diversity$Shannon, richF$Location, method = "bh")
+dunn.test(richF$alpha_diversity$InvSimpson, richF$Location, method = "bh")
+
+dunn.test(richF$alpha_diversity$Shannon, richF$Age, method = "bh")
+dunn.test(richF$alpha_diversity$InvSimpson, richF$Age, method = "bh")
+dunn.test(richF$alpha_diversity$Observed, richF$Age, method = "bh") 
+
+dunn.test(richF_Nest_HR$alpha_diversity$Shannon, richF_Nest_HR$Nest_type, method = "bh")
+dunn.test(richF_Nest_HR$alpha_diversity$InvSimpson, richF_Nest_HR$Nest_type, method = "bh")
+dunn.test(richF_Nest_HR$alpha_diversity$Observed, richF_Nest_HR$Nest_type, method = "bh")
+dunn.test(richF$alpha_diversity$Observed, richF$Nest_type, method = "bh")
+
+shannon_nest_dunn <- data.frame(dunn.test(richF$alpha_diversity$Shannon, richF$Nest, method = "bh")) 
+write.table(shannon_nest_dunn, "tables/shannon_faecal_nest_dunn_comparison.csv")
+```
+
+```{r}
+p.obs.hr <- c("0.0017","0.46","0.0009","0.00000005","0.22","0.0006","0.00005","0.15")
+p.obs <- c("0.25","0.075","0.68","0.0008")
+
+p.invsimp.hr <- c("0.16","0.66","0.018","0.016","0.28","0.13","0.0000006","0.022")
+p.invsimp <- c("0.13","0.011","0.14","0.000007")
+
+p.adjust(p.obs.hr, method = "BH")
+p.adjust(p.obs, method = "BH")
+p.adjust(p.invsimp.hr, method = "BH")
+p.adjust(p.invsimp, method = "BH")
+```
+
+
+Create an alpha diversity plot.
+
+```{r fig.cap = "Alpha Diversity measures in adult K\u101k\u101p\u14d by Island", fig.height = 15, fig.width = 20, dpi=300}
+observed.F.pooR <- data.frame(start=c("Faeces in","Faeces removed","Hand rearing"), 
+                            end=c("Hand rearing","Hand rearing","Mixed"),
+                              y=c(240,220,200),
+                              label=c("0.01**","0.0004***","0.08"))
+
+
+observed.F.location <- data.frame(start=c("Hand rearing","Hand rearing","Pukenui"),
+                              end=c("Pukenui","Whenua Hou","Whenua Hou"),
+                              y=c(240,270,220),
+                              label=c("0.0003***","0.007**","0.04*"))
+
+simpson.F.location <- data.frame(start=c("Hand rearing","Hand rearing","Pukenui"),
+                              end=c("Pukenui","Whenua Hou","Whenua Hou"),
+                              y=c(1.5,2,1.7),
+                              label=c("0.42","0.05","0.01*"))
+
+observed.F.nest_type <- data.frame(start=c("A-frame","Hand rearing","Hand rearing"), #"A-frame","Hole","Sub-adult samples"),
+                              end=c("Hand rearing","Hole","Tree"),#"Sub-adult samples","Sub-adult samples","Tree"),
+                              y=c(220,200,240),#350,310,190),
+                              label=c("0.0008***","0.0004***","0.001**"))#"0.00001****","0.00001****","0.00001****"))
+
+
+observed.age.bar.F <- data.frame(start=c("<20 days","<20 days","20 - 40 days","20 - 40 days","20 - 40 days","20 - 40 days","20 - 40 days","40 - 60 days"),
+                              end=c("60 - 120 days","200+ days","<20 days","40 - 60 days","60 - 120 days","200+ days","300+ days","200+ days"),
+                              y=c(280,300,260,180,200,220,240,150),
+                              label=c("*","**","**","**","***","***","**","**"))
+
+
+simpson.age.bar.F <- data.frame(start=c("<20 days","20 - 40 days","20 - 40 days"),
+                              end=c("60 - 120 days","60 - 120 days","200+ days"),
+                              y=c(1.8,1.6,2),
+                              label=c("*","*","*"))
+
+
+
+
+#viridis_palette <- c("#404788F","#238A8DFF","#3CBB75FF","#FDE725FF")
+rich_dfF <- as.data.frame(richF)
+names(rich_dfF)[names(rich_dfF) == "alpha_diversity.Observed"] <- "Observed"
+names(rich_dfF)[names(rich_dfF) == "alpha_diversity.InvSimpson"] <- "InvSimpson"
+
+richF_UK.df <- as.data.frame(richF_UK)
+names(richF_UK.df)[names(richF_UK.df) == "alpha_diversity.Observed"] <- "Observed"
+names(richF_UK.df)[names(richF_UK.df) == "alpha_diversity.InvSimpson"] <- "InvSimpson"
+richF_UK.df$Faecal_experiment <- factor(richF_UK.df$Faecal_experiment, levels = c("Faeces in","Faeces removed","Hand rearing","Mixed"))
+
+richF_Nest_HR.df <- as.data.frame(richF_Nest_HR)
+names(richF_Nest_HR.df)[names(richF_Nest_HR.df) == "alpha_diversity.Observed"] <- "Observed"
+names(richF_Nest_HR.df)[names(richF_Nest_HR.df) == "alpha_diversity.InvSimpson"] <- "InvSimpson"
+
+myadptheme <- theme_ipsum() + theme(plot.title = element_text(size = 26),
+  
+          plot.subtitle = element_text(size = 24),
+          
+          axis.text.x = element_blank(),
+
+          axis.title.x = element_text(size=35),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_text(size=25),
+
+          axis.title.y=element_text(size=35),
+
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_line(color="black",size=1.0,linetype=1),
+
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5, 5, 5, 5),
+
+          legend.position="bottom",
+
+          legend.title = element_text(face = "bold", size = 35),
+          
+          legend.text = element_text(size = 30))
+
+```
+
+
+```{r fig.height=10, fig.width=32}
+kakapo_colours <- c("#4b5e1e", "#7D9D33", "#DCC949", "#BCA888", "#CD8862", "#775B24")
+
+obs_bar <- ggplot(data=rich_dfF, aes(x=Sample_Name,y=Observed, fill = Age)) + 
+  
+  geom_bar(aes(), stat="identity", position="stack", width = 1)  +
+  
+  theme_ipsum() + theme(axis.text.x = element_blank(),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_blank(),
+
+          axis.title.y=element_blank(),
+          
+          axis.title.x = element_text(size = 35),
+          
+          strip.text.x = element_blank(),
+          
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+          
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_blank(),
+          
+          legend.position = "none") +
+  
+  labs(x="\nK\u101k\u101p\u14d faecal samples") + 
+  
+  scale_y_continuous(limits = c(0,340), expand = c(0, 0)) +
+  
+  facet_grid(~Age, scales = "free_x", space = "free")  + 
+  
+  scale_fill_manual(values = kakapo_colours)
+
+obs_bar
+```
+
+```{r fig.height=10, fig.width=10}
+obs.Age <- ggplot(rich_dfF, aes(x=Age, y=Observed))
+obs.Age.plot <- obs.Age + geom_boxplot(size=1.0, aes(fill=Age)) + 
+    myadptheme + theme(plot.title = element_text(size = 35)) +
+    scale_fill_manual(values = kakapo_colours) + 
+    labs(y = "Observed species", x = "\nAge groups") +
+    ggtitle("Kruskal-Wallis p < 0.001***") +
+    geom_signif(data=observed.age.bar.F,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 8,colour = "blue") 
+
+obs.Age.plot
+```
+
+```{r fig.height=10, fig.width=42}
+library(cowplot)
+obs.faecal = ggarrange(obs.Age.plot, obs_bar, labels = c("B"), font.label = list(size = 30),
+          ncol=2, nrow=1, legend = "none", widths = c(0.25,1))
+obs.faecal
+```
+
+```{r fig.height=10, fig.width=32}
+rich_dfF$InvSimpsonlog <- log10(rich_dfF$InvSimpson)
+
+invsimpson_bar <- ggplot(data=rich_dfF, aes(x=Sample_Name,y=InvSimpsonlog, fill = Age)) + 
+  
+  geom_bar(aes(), stat="identity", position="stack", width = 1)  + 
+  
+  theme_ipsum() + theme(axis.text.x = element_blank(),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_blank(),
+
+          axis.title.y=element_blank(),
+          
+          axis.title.x = element_text(size = 35),
+          
+          strip.text.x = element_blank(),
+          
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+          
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_blank(),
+          
+          legend.position = "bottom", 
+          
+          legend.title = element_text(face = "bold", size = 38),
+          
+          legend.text = element_text(size = 35),
+          
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5, 5, 5, 5)) +
+  
+  labs(x = "\nK\u101k\u101p\u14d faecal samples") +
+  
+  guides(fill = guide_legend(nrow = 1, override.aes=list(shape=15, size = 15))) +
+  
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 2.3)) +
+  
+  facet_grid(~Age, scales = "free_x", space = "free") + 
+  
+  scale_fill_manual(values = kakapo_colours)
+
+invsimpson_bar
+
+invsimpson_bar.NL <- invsimpson_bar + theme(legend.position = "none")
+
+faecal.adp.legend <- get_legend(invsimpson_bar)
+```
+
+```{r fig.height=10, fig.width=10}
+invsimp.Age <- ggplot(rich_dfF, aes(x=Age, y=InvSimpsonlog))
+invsimp.Age.plot <- invsimp.Age + geom_boxplot(size=1.0, aes(fill=Age)) + 
+    myadptheme + theme(plot.title = element_text(size = 35)) +
+    scale_fill_manual(values = kakapo_colours) + 
+    labs(y = "Inverse Simpson diversity [log10]", x = "\nAge groups") +
+    ggtitle("Kruskal-Wallis p = 0.04*") +
+    geom_signif(data=simpson.age.bar.F,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 8, colour = "blue") 
+
+invsimp.Age.plot
+```
+
+```{r fig.height=10, fig.width=42}
+invsimp.faecal = ggarrange(invsimp.Age.plot, invsimpson_bar.NL, labels = c("C"), font.label = list(size = 30),
+          ncol=2, nrow=1, legend = "none", widths = c(0.25,1))
+invsimp.faecal
+```
+
+```{r fig.height = 40, fig.width = 42, dpi=300}
+faecal.taxa.adp.combined = ggarrange(taxa.f, NULL, obs.faecal,invsimp.faecal,faecal.adp.legend, nrow = 5, labels = c("A"), font.label = list(size = 30), heights = c(1, 0.02, 0.7, 0.7, 0.2))
+faecal.taxa.adp.combined
+ggsave("faecal_age_taxaplot_adp_obs_JUN2022.png", faecal.taxa.adp.combined, height = 30, width = 42, dpi = 400)
+```
+
+
+```{r}
+col.42 = c("#10121c","#2c1e31",'#6b2643',"#ac2847","#ec273f","#94493a","#de5d3a","#e98537","#f3a833","#4d3533","#6e4c30","#a26d3f","#ce9248","#dab163","#e8d282","#f7f3b7","#1e4044","#006554","#26854c","#5ab552","#9de64e","#008b8b","#62a477","#a6cb96","#d3eed3","#3e3b65","#3859b3","#3388de","#36c5f4","#6dead6","#5e5b8c","#8c78a5","#b0a7b8","#deceed","#9a4d76","#c878af","#cc99ff","#fa6e79","#ffa2ac","#ffd1d5","#f6e8e0","#ffffff")
+```
+
+
+```{r fig.cap = "Chao1 by nest", fig.height = 10, fig.width = 15, dpi=300}
+nest.f.col <- c("#882E72","#B178A6","#D6C1DE","#54809D","#1965B0","#7BAFDE","#4EB265","#CAE0AB","#77b6b1","#33605d","#F7EE55","#F6C141","#e98537","#FF99AB","#ECD3D8","#FF0F39","#ac2847","#E2DDDE","#767676")
+
+##By nest
+obs.nest <- ggplot(richF_Nest_HR.df, aes(x=Nest, y=Observed))  
+obs.nest.plot <- obs.nest + geom_boxplot(size=1.0, aes(fill=Nest)) + 
+    myadptheme + theme(axis.title.x = element_text(size = 24), 
+                                                 axis.title.y = element_text(size = 24), 
+                                                 legend.text = element_text(size = 22), 
+                                                 legend.title = element_text(size = 24)) +
+    labs(y = "Observed species",  x = "Nest") +
+    ggtitle("Observed", subtitle = "Kruskal-Wallis p < 0.001***") +
+    scale_fill_manual(values = col.42) #+
+obs.nest.plot
+
+
+invsimp.nest <- ggplot(richF_Nest_HR.df, aes(x=Nest, y=InvSimpson))  
+invsimp.nest.plot <- invsimp.nest + geom_boxplot(size=1.0, aes(fill=Nest), outlier.shape = NA) + 
+    myadptheme + 
+    scale_y_continuous(limits = c(1,45)) + 
+    theme(axis.title.x = element_text(size = 24), 
+                         axis.title.y = element_text(size = 24), 
+                         legend.text = element_text(size = 22), 
+                         legend.title = element_text(size = 24)) +
+    labs(y = "Inverse Simpson diversity", x = "\nNest") + 
+    ggtitle("Inverse Simpson",subtitle = "Kruskal-Wallis p < 0.001***") +
+    scale_fill_manual(values = col.42)
+invsimp.nest.plot
+```
+
+```{r fig.height = 21, fig.width = 15, dpi=300}
+nest.f = ggarrange(obs.nest.plot,invsimp.nest.plot, labels = c("A","B"), font.label = list(size = 30), 
+          ncol=1, nrow=2, common.legend = TRUE, legend="bottom")
+nest.f.title = annotate_figure(nest.f, top = text_grob("Faecal samples by nest of residence", face = "bold", family = "sans", size = 30))
+nest.f.title
+#dir.create("alpha_div")
+ggsave("alpha_div/faecal_nest_adp_obs_JUN2022.png",nest.f.title, height = 21, width = 15, dpi = 400, bg = "white")
+```
+
+```{r}
+myadptheme.edit <- theme_ipsum() + theme(plot.title = element_text(size = 28),
+                                         
+          plot.subtitle = element_text(size = 25),
+  
+          axis.text.x = element_blank(),
+
+          axis.title.x = element_text(size=20),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_text(size=16),
+
+          axis.title.y=element_text(size=20),
+
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_line(color="black",size=1.0,linetype=1),
+
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5,5,5,5),
+
+          legend.position="bottom",
+
+          legend.title = element_text(face = "bold", size = 24),
+          
+          legend.text = element_text(size = 20))
+```
+
+```{r fig.height = 10, fig.width = 13, dpi=300}
+obs.pooR <- ggplot(richF_UK.df, aes(x=Faecal_experiment, y=Observed))
+obs.pooR.plot <- obs.pooR + geom_boxplot(size=1.0, aes(fill=Faecal_experiment)) + myadptheme.edit + 
+    labs(y = "Observed species", x = "Faecal experiment groups") +
+    scale_fill_manual(values= get_pal("Kakapo"), name = "Observed species") + 
+    ggtitle("Faecal samples", subtitle = "Kruskal-Wallis p = 0.002**") +
+    geom_signif(data=observed.F.pooR,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6) 
+obs.pooR.plot
+```
+
+
+```{r fig.height = 10, fig.width = 13, dpi=300}
+obs.location <- ggplot(rich_dfF, aes(x=Location, y=Observed))
+obs.location.plot <- obs.location + geom_boxplot(size=1.0, aes(fill=Location)) + myadptheme.edit + 
+    theme(plot.margin = unit(c(2,0.5,0.5,0.5), "cm"), axis.title.y = element_text(size = 35), 
+          axis.title.x = element_text(size = 35), legend.title = element_text(face = "bold", size = 35), 
+          legend.text = element_text(size = 30), plot.title = element_text(size = 38), 
+          plot.subtitle = element_text(size = 35)) +
+    labs(y = "Observed species", x = "Location") +
+    scale_fill_manual(values= c("#DCC949","#4B5F6C", "#A8B9CB")) + 
+    ggtitle("Observed", subtitle = "Kruskal-Wallis p = 0.002**") +
+    geom_signif(data=observed.F.location,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6) 
+obs.location.plot
+
+invsimp.location <- ggplot(rich_dfF, aes(x=Location, y=InvSimpsonlog))
+invsimp.location.plot <- invsimp.location + geom_boxplot(size=1.0, aes(fill=Location)) + myadptheme.edit +
+    theme(plot.margin = unit(c(2,0.5,0.5,0.5), "cm"), axis.title.y = element_text(size = 35), 
+          axis.title.x = element_text(size = 35), legend.title = element_text(face = "bold", size = 35), 
+          legend.text = element_text(size = 30), plot.title = element_text(size = 38), 
+          plot.subtitle = element_text(size = 35)) +
+    labs(y = "Inverse Simpson diversity [log10]", x = "Location") +
+    scale_fill_manual(values= c("#DCC949","#4B5F6C", "#A8B9CB")) + 
+    ggtitle("Inverse Simpson", subtitle = "Kruskal-Wallis p = 0.04*") +
+    geom_signif(data=simpson.F.location,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6) 
+invsimp.location.plot
+```
+
+```{r fig.height = 10, fig.width = 15, dpi=300}
+location.f = ggarrange(obs.location.plot, NULL, invsimp.location.plot, labels = c("A","","B"), font.label = list(size = 30),
+          ncol=3, nrow=1, common.legend = TRUE, legend="bottom", widths = c(1,0.25,1))
+location.f.title = annotate_figure(location.f, top = text_grob("Faecal samples by location\n", face = "bold", family = "sans", size = 38))
+location.f.title
+```
+
+```{r fig.height = 25, fig.width = 26, dpi=300}
+location.taxaplot.adp.combined <- ggarrange(location.f.title,NULL, faecal_taxa_plotbar.L, labels = c("","","C"), font.label = list(size = 30), 
+                                     nrow = 3, heights = c(0.9,0.09,1)) + theme(plot.margin = margin(1,0.5,0.5,0.5, "cm"))
+location.taxaplot.adp.combined
+ggsave("location_taxaplot_adp_combined_JUN2022.png",location.taxaplot.adp.combined, width = 26, height = 25, dpi = 400, bg = "white")
+```
+
+```{r fig.height = 10, fig.width = 13, dpi=300}
+nt.col <- c("#c9cca1", "#caa05a", "#ae6a47", "#8b4049", "#515262", "#63787d", "#8ea091")
+
+obs.nest_type <- ggplot(richF_Nest_HR.df, aes(x=Nest_type, y=Observed))
+obs.nest_type.plot <- obs.nest_type + geom_boxplot(size=1.0, aes(fill=Nest_type)) + myadptheme.edit + 
+    theme(plot.margin = unit(c(2,0.5,0.5,0.5), "cm")) +
+    labs(y = "Observed species", x = "Nest type") +
+    scale_fill_manual(values= nt.col, name = "Nest type") + 
+    ggtitle("Observed", subtitle = "Kruskal-Wallis p = 0.002**") +
+    geom_signif(data=observed.F.nest_type,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6) 
+obs.nest_type.plot
+
+richF_Nest_HR.df$InvSimpsonlog = log10(richF_Nest_HR.df$InvSimpson)
+
+invsimp.nest_type <- ggplot(richF_Nest_HR.df, aes(x=Nest_type, y=InvSimpsonlog))
+invsimp.nest_type.plot <- invsimp.nest_type + geom_boxplot(size=1.0, aes(fill=Nest_type)) + myadptheme.edit +
+    theme(plot.margin = unit(c(2,0.5,0.5,0.5), "cm")) +
+    labs(y = "Inverse Simpson diversity [log10]", x = "Nest type") +
+    scale_fill_manual(values= nt.col, name = "Nest type") + 
+    ggtitle("Inverse Simpson", subtitle = "Kruskal-Wallis p = 0.21")
+invsimp.nest_type.plot
+```
+
+```{r fig.height = 10, fig.width = 15, dpi=300}
+nest.type.f = ggarrange(obs.nest_type.plot, invsimp.nest_type.plot, labels = c("A","B"), font.label = list(size = 30),
+                        ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+nest.type.f.title = annotate_figure(nest.type.f, top = text_grob("Faecal samples by nest type\n", face = "bold", family = "sans", size = 30))
+nest.type.f.title
+
+ggsave("alpha_div/faecal_adp_nest_type_obs_JUN2022.png",nest.type.f.title, height = 10, width = 15, dpi = 400)
+```
+
+###Litter
+
+```{r}
+rich_psN <- estimate_richness(psN_SRS, measures = c("InvSimpson","Shannon","Observed"))
+richN <- list(rich_psN, sample_data(psN_SRS)$Faecal_experiment, sample_data(psN_SRS)$Movement, sample_data(psN_SRS)$Location, sample_data(psN_SRS)$Age, sample_data(psN_SRS)$Aspergillosis, sample_data(psN_SRS)$Nest_type, sample_data(psN_SRS)$Nest, sample_data(psN_SRS)$Sample_Name)
+names(richN) <- c("alpha_diversity", "Faecal_experiment", "Movement", "Location", "Age", "Aspergillosis", "Nest_type", "Nest", "Sample_Name")
+
+shapiro.test(richN$alpha_diversity$InvSimpson) 
+shapiro.test(richN$alpha_diversity$Shannon) 
+shapiro.test(richN$alpha_diversity$Observed) 
+
+#Faecal experiment
+rich_psN_UKsubset <- estimate_richness(psN_UKsubset, measures = c("Observed","InvSimpson"))
+richN_UK <- list(rich_psN_UKsubset, sample_data(psN_UKsubset)$Faecal_experiment)
+names(richN_UK) <- c("alpha_diversity", "Faecal_experiment")
+
+wilcox.test(richN_UK$alpha_diversity$Observed ~ richN_UK$Faecal_experiment)
+wilcox.test(richN_UK$alpha_diversity$InvSimpson ~ richN_UK$Faecal_experiment) 
+
+#Movement
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Movement)
+kruskal.test(richN$alpha_diversity$Shannon, richN$Movement)
+kruskal.test(richN$alpha_diversity$Observed, richN$Movement)
+
+#Location
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Location)
+kruskal.test(richN$alpha_diversity$Shannon, richN$Location)
+kruskal.test(richN$alpha_diversity$Observed, richN$Location)
+
+wilcox.test(richN$alpha_diversity$Observed ~ richN$Location) 
+wilcox.test(richN$alpha_diversity$InvSimpson ~ richN$Location) 
+
+#Age
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Age) 
+kruskal.test(richN$alpha_diversity$Shannon, richN$Age)
+kruskal.test(richN$alpha_diversity$Observed, richN$Age)
+
+#Aspergillosis
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Aspergillosis) 
+kruskal.test(richN$alpha_diversity$Shannon, richN$Aspergillosis)
+kruskal.test(richN$alpha_diversity$Observed, richN$Aspergillosis)
+
+#Nest_type
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Nest_type)
+kruskal.test(richN$alpha_diversity$Shannon, richN$Nest_type)
+kruskal.test(richN$alpha_diversity$Observed, richN$Nest_type)
+
+#Nest
+kruskal.test(richN$alpha_diversity$InvSimpson, richN$Nest)
+kruskal.test(richN$alpha_diversity$Shannon, richN$Nest)
+kruskal.test(richN$alpha_diversity$Observed, richN$Nest)
+
+```
+
+```{r}
+library(dunn.test); packageVersion("dunn.test")
+
+dunn.test(richN$alpha_diversity$Observed, richN$Age, method = "bh") 
+dunn.test(richN$alpha_diversity$InvSimpson, richN$Age, method = "bh")
+```
+
+```{r}
+l.p.obs <- c("0.11","0.17","0.79","0.0004","0.39","0.54","0.33")
+l.p.invsimp <- c("0.9","0.03","0.36","0.02","0.05","0.74","0.39")
+
+p.adjust(l.p.obs, method = "BH")
+p.adjust(l.p.invsimp, method = "BH")
+```
+
+
+Create an alpha diversity plot.
+
+```{r fig.cap = "Alpha Diversity measures in adult K\u101k\u101p\u14d by Island", fig.height = 15, fig.width = 20, dpi=300}
+simpson.N.Age.bar <- data.frame(start=c("<20 days","40 - 60 days"),
+                              end=c("40 - 60 days","60 - 90 days"),
+                              y=c(175,155),
+                              label=c("*","*"))
+
+obs.N.Age.bar <- data.frame(start=c("<20 days","<20 days"),
+                              end=c("20 - 40 days","40 - 60 days"),
+                              y=c(600,640),
+                              label=c("*","***"))
+
+
+#viridis_palette <- c("#404788F","#238A8DFF","#3CBB75FF","#FDE725FF")
+rich_dfN <- as.data.frame(richN)
+names(rich_dfN)[names(rich_dfN) == "alpha_diversity.InvSimpson"] <- "InvSimpson"
+names(rich_dfN)[names(rich_dfN) == "alpha_diversity.Observed"] <- "Observed"
+
+richN_UK.df <- as.data.frame(richN_UK)
+names(richN_UK.df)[names(richN_UK.df) == "alpha_diversity.InvSimpson"] <- "InvSimpson"
+names(richN_UK.df)[names(richN_UK.df) == "alpha_diversity.Observed"] <- "Observed"
+```
+
+
+```{r fig.height=10, fig.width=32}
+obs_bar.n <- ggplot(data=rich_dfN, aes(x=Sample_Name,y=Observed, fill = Age)) + 
+  
+  geom_bar(aes(), stat="identity", position="stack", width = 1)  +
+  
+  theme_ipsum() + theme(axis.text.x = element_blank(),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_blank(),
+
+          axis.title.y=element_blank(),
+          
+          axis.title.x = element_text(size = 35),
+          
+          strip.text.x = element_blank(),
+          
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+          
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_blank(),
+          
+          legend.position = "none") +
+  
+  labs(x="\nNest litter samples") + 
+  
+  scale_y_continuous(limits = c(0,740), expand = c(0, 0)) +
+  
+  facet_grid(~Age, scales = "free_x", space = "free")  + 
+  
+  scale_fill_manual(values = kakapo_colours)
+
+obs_bar.n
+```
+
+```{r fig.height=10, fig.width=10}
+obs.Age.n <- ggplot(rich_dfN, aes(x=Age, y=Observed))
+obs.Age.plot.n <- obs.Age.n + geom_boxplot(size=1.0, aes(fill=Age)) + myadptheme + 
+    scale_fill_manual(values= kakapo_colours) + theme(plot.title = element_text(size = 35)) +
+    labs(y = "Observed species", x = "\nTemporal groups") +
+    ggtitle("Kruskal-Wallis p = 0.003**") +
+    geom_signif(data=obs.N.Age.bar,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 8, colour = "blue") 
+obs.Age.plot.n
+```
+
+```{r fig.height=10, fig.width=42}
+obs.litter = ggarrange(obs.Age.plot.n, obs_bar.n, labels = c("B"), font.label = list(size = 30), 
+          ncol=2, nrow=1, legend = "none", widths = c(0.27,1))
+obs.litter
+```
+
+
+```{r fig.height=10, fig.width=32}
+simpson_bar.n <- ggplot(data=rich_dfN, aes(x=Sample_Name,y=InvSimpson, fill=Age)) + 
+  
+  geom_bar(aes(), stat="identity", position="stack", width = 1)  + 
+  
+  theme_ipsum() + theme(axis.text.x = element_blank(),
+
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_blank(),
+
+          axis.title.y=element_blank(),
+          
+          axis.title.x = element_text(size = 35),
+          
+          strip.text.x = element_blank(),
+          
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+          
+          axis.line.x=element_line(color="black",size=1.0,linetype=1),
+
+          axis.line.y=element_blank(),
+          
+          legend.position = "bottom", 
+          
+          legend.title = element_text(face = "bold", size = 35),
+          
+          legend.text = element_text(size = 30),
+          
+          legend.box.background = element_rect(),
+
+          legend.box.margin = margin(5, 5, 5, 5)) +
+  
+  guides(fill = guide_legend(nrow = 1, override.aes=list(shape=15, size = 15))) +
+  
+  labs(x = "\nNest litter samples") +
+    
+  scale_y_continuous(limits = c(0,225), expand = c(0, 0)) +
+  
+  facet_grid(~Age, scales = "free_x", space = "free") + 
+  
+  scale_fill_manual(values = kakapo_colours, name = "Days") 
+
+simpson_bar.n
+
+simpson_bar.n.NL = simpson_bar.n + theme(legend.position = "none")
+
+litter.adp.legend = get_legend(simpson_bar.n)
+```
+
+```{r fig.height=10, fig.width=10}
+simpson.Age.n <- ggplot(rich_dfN, aes(x=Age, y=InvSimpson))
+simpson.Age.plot.n <- simpson.Age.n + geom_boxplot(size=1.0, aes(fill=Age)) + 
+    myadptheme +  theme(plot.title = element_text(size = 35)) +
+    scale_fill_manual(values = kakapo_colours) + 
+    labs(y = "Inverse Simpson diversity", x = "\nTemporal groups") +
+    ggtitle("Kruskal-Wallis p = 0.11")
+simpson.Age.plot.n
+```
+
+```{r fig.height=10, fig.width=42}
+simpson.litter = ggarrange(simpson.Age.plot.n, simpson_bar.n.NL, labels = c("C"), font.label = list(size = 30), 
+          ncol=2, nrow=1, widths = c(0.27,1), legend = "none")
+simpson.litter
+```
+
+```{r fig.height = 32, fig.width = 42, dpi=300}
+litter.taxa.adp.combined = ggarrange(taxa.n, NULL, obs.litter,simpson.litter, litter.adp.legend, labels = c("A"), font.label = list(size = 30), nrow = 5, heights = c(1, 0.02, 0.7, 0.7, 0.2))
+litter.taxa.adp.combined
+ggsave("litter_age_taxaplot_adp_obs_JUN2022.png", litter.taxa.adp.combined, height = 32, width = 42, dpi = 400, bg = "white")
+```
+
+
+```{r fig.cap = "combined faecal with pooled samples", fig.height = 10, fig.width = 13, dpi=300}
+##Faecal experiment
+n.obs.pooR <- ggplot(richN_UK.df, aes(x=Faecal_experiment, y=Observed))
+n.obs.pooR.plot <- n.obs.pooR + geom_boxplot(size=1.0, aes(fill=Faecal_experiment)) + myadptheme.edit + 
+    labs(y="Observed species", x = "Faecal experiment groups") + 
+    scale_fill_manual(values= get_pal("Kakapo"), name = "Observed") + 
+    ggtitle("Litter samples", subtitle = "Wilcoxon p = 0.90") 
+n.obs.pooR.plot
+```
+
+
+```{r  fig.height = 19, fig.width = 15, dpi=300}
+obs.pooR.together <- ggarrange(obs.pooR.plot, n.obs.pooR.plot, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+pooR.adp.bcbox.combined <- ggarrange(obs.pooR.together, NULL, bc.boxplots.combined, labels = c("A","","B"), font.label = list(size = 30), 
+                                     nrow = 3, heights = c(1,0.15,1)) + theme(plot.margin = margin(1,0.5,0.5,0.5, "cm"))
+pooR.adp.bcbox.combined
+ggsave("pooR_adp_bcbox_combined_JUN2022.png",pooR.adp.bcbox.combined, height = 17, width = 15, dpi = 400, bg = "white")
+```
+
+
+#Heat maps
+
+```{r}
+heatmap.theme <- theme_ipsum() + theme(plot.title = element_text(size = 24),
+  
+          axis.ticks.x = element_blank(),
+
+          axis.text.y=element_text(size=14),
+          
+          axis.text.x=element_text(size=17),
+
+          axis.title.y=element_text(size=20),
+          
+          axis.title.x = element_text(size=20),
+          
+          panel.grid.major = element_blank(),
+
+          panel.grid.minor = element_blank(),
+
+          panel.background = element_blank(),
+          
+          legend.position = "right",
+          
+          legend.title = element_text(size = 17),
+          
+          legend.text = element_text(size = 12))
+```
+
+```{r fig.height = 20, fig.width = 16, dpi=300}
+merged.ps.F.pooR = merge_samples(psF_UKsubset, "Faecal_experiment")
+top20.F.pooR <- prune_taxa(names(sort(taxa_sums(merged.ps.F.pooR),TRUE)[1:20]), merged.ps.F.pooR)
+top20.F.pooR.RA <- transform_sample_counts(top20.F.pooR, function(x) x/sum(x))
+merged.ps.N.pooR = merge_samples(psN_UKsubset, "Faecal_experiment")
+top20.N.pooR <- prune_taxa(names(sort(taxa_sums(merged.ps.N.pooR),TRUE)[1:20]), merged.ps.N.pooR)
+
+hm.f.pooR = plot_heatmap(top20.F.pooR.RA, "PCoA","bray", low="#ffd1d5", high="#6b2643", na.value="#f6e8e0",
+                         sample.order = c("Faeces in","Faeces removed","Mixed","Hand rearing"), taxa.order="Family") + 
+      theme_ipsum() + 
+      labs(x = "Faecal removal", y = "ASV") + 
+      heatmap.theme + 
+      ggtitle("Faecal samples")
+hm.f.pooR
+
+
+hm.n.pooR <- plot_heatmap(top20.N.pooR, "PCoA","bray", low="#CAE0AB", high="#33605d", na.value="#f4f8ee",
+                          sample.order = c("Faeces in","Faeces removed")) + 
+      theme_ipsum() + 
+      labs(x = "Faecal removal", y = "ASV\n") + 
+      heatmap.theme + 
+      ggtitle("Litter samples")
+hm.n.pooR
+
+heatmap.combined.pooR <- ggarrange(hm.f.pooR, hm.n.pooR, nrow = 2, labels = c("A","B"), font.label = list(size = 30)) + theme(plot.margin = margin(3,0.5,0.5,0.5, "cm"))
+heatmap.combined.pooR.title = annotate_figure(heatmap.combined.pooR, fig.lab = "Faecal removal experiment\n\n", fig.lab.pos = "top.left", fig.lab.size = 35)
+heatmap.combined.pooR.title
+#ggsave("heatmaps/heatmap_combined_pooR_no_coli.png", heatmap.combined.pooR.title, width = 16, height = 20, dpi = 400)
+```
+
+```{r fig.height = 22, fig.width = 16, dpi=300}
+psF_sub.NT <- subset_samples(psF_SRS, Nest_type != "Sub-adult samples")
+merged.ps.F.NT = merge_samples(psF_sub.NT, "Nest_type")
+top20.F.NT <- prune_taxa(names(sort(taxa_sums(merged.ps.F.NT),TRUE)[1:20]), merged.ps.F.NT)
+
+hm.f.NT = plot_heatmap(top20.F.NT, "PCoA","bray", low="#ffd1d5", high="#6b2643", na.value="#f6e8e0", taxa.order="Family", 
+                        sample.order = c("A-frame","Hand rearing","Open","Rock","Hole","Tree")) + 
+      theme_ipsum() + 
+      labs(x = "Nest type", y = "ASV") + 
+      heatmap.theme + 
+      ggtitle("Heatmap of 20 most abundant ASVs")
+hm.f.NT
+
+heatmap.adp.combined.NT <- ggarrange(nest.type.f.title, NULL, hm.f.NT, nrow = 3, labels = c("","","C"), font.label = list(size = 30),
+                                     heights = c(1, 0.15, 1)) + theme(plot.margin = margin(1,0.5,0.5,0.5, "cm"))
+heatmap.adp.combined.NT
+ggsave("heatmaps/heatmap_adp_combined_nest_type_JUN2022.png", heatmap.adp.combined.NT, width = 18, height = 22, dpi = 400, bg = "white")
+```
+
+```{r fig.height = 22, fig.width = 16, dpi=300}
+merged.ps.F.location <- merge_samples(psF_SRS, "Location")
+top20.F.location <- prune_taxa(names(sort(taxa_sums(merged.ps.F.location),TRUE)[1:20]), merged.ps.F.location)
+
+hm.f.is = plot_heatmap(top20.F.location, "PCoA","bray", low="#ffd1d5", high="#6b2643", na.value="#f6e8e0",
+                        taxa.order="Family", sample.order = c("Pukenui","Hand rearing","Whenua Hou")) + 
+      theme_ipsum() + 
+      labs(x = "Location", y = "ASV") + 
+      heatmap.theme + 
+      ggtitle("Faecal samples")
+hm.f.is
+
+heatmap.adp.combined.location <- ggarrange(location.f.title, NULL, hm.f.is, nrow = 3, labels = c("A","","B"), font.label = list(size = 30),
+                                     heights = c(1, 0.15, 1)) + theme(plot.margin = margin(3,0.5,0.5,0.5, "cm"))
+heatmap.adp.combined.location
+ggsave("heatmaps/heatmap_adp_combined_location_JUN2022.png", heatmap.adp.combined.location, width = 16, height = 22, dpi = 400, bg = "white")
+```
+
+```{r fig.height = 20, fig.width = 16, dpi=300}
+merged.ps.F.Age = merge_samples(psF_SRS, "Age")
+top20.F.Age <- prune_taxa(names(sort(taxa_sums(merged.ps.F.Age),TRUE)[1:20]), merged.ps.F.Age)
+merged.ps.N.temp = merge_samples(psN_SRS, "Age")
+top20.N.temp <- prune_taxa(names(sort(taxa_sums(merged.ps.N.temp),TRUE)[1:20]), merged.ps.N.temp)
+
+
+
+hm.f.Age = plot_heatmap(top20.F.Age, "PCoA","bray", low="#ffd1d5", high="#6b2643", na.value="#f6e8e0",
+                        sample.order = c("<20 days","20 - 40 days","40 - 60 days","60 - 120 days","200+ days","300+ days")) + 
+      theme_ipsum() + 
+      labs(x = "K\u101k\u101p\u14d chick age at sample collection", y = "ASV") + 
+      heatmap.theme + 
+      ggtitle("Faecal samples")
+hm.f.Age
+
+
+hm.n.temp <- plot_heatmap(top20.N.temp, "PCoA","bray", low="#CAE0AB", high="#33605d", na.value="#f4f8ee",
+                          sample.order = c("<20 days","20 - 40 days","40 - 60 days","60 - 90 days")) + 
+      theme_ipsum() + 
+      labs(x = "Days since first chick in nest", y = "ASV") + 
+      heatmap.theme + 
+      ggtitle("Litter samples")
+hm.n.temp
+
+heatmap.combined.age <- plot_grid(hm.f.Age, hm.n.temp, labels = c("A","B"), nrow = 2)
+heatmap.combined.age
+ggsave("heatmaps/heatmap_combined_age_JUN2022.png", heatmap.combined.age, width = 16, height = 20, dpi = 400)
+```
+
+
+##Beta Diversity
+
+```{r fig.cap = "K\u101k\u101p\u14d Bray-Curtis PCoA scree plot", fig.height = 10, fig.width = 15, dpi=300}
+map.f.2 <- sample_data(psF_SRS)
+identical(rownames(map.f.2), rownames(SRS_outputF.df.sort))
+map.f.2$E_abundance = SRS_outputF.df.sort$`ASV_1_Escherichia-Shigella coli`
+psF_SRS_beta <- phyloseq(otu_table(SRS_outputF.df.sort, taxa_are_rows = F), 
+                sample_data(map.f.2),
+                tax_table(NtaxaF.df))
+
+psF_RA <- transform_sample_counts(psF_SRS_beta, function(x) {x/sum(x)})
+
+map.n.2 <- sample_data(psN_SRS)
+identical(rownames(map.n.2), rownames(SRS_outputN.df.sort))
+map.n.2$E_abundance = SRS_outputN.df.sort$`ASV_1_Escherichia-Shigella coli`
+psN_SRS_beta <- phyloseq(otu_table(SRS_outputN.df.sort, taxa_are_rows = F), 
+                sample_data(map.n.2),
+                tax_table(NtaxaN.df))
+
+psN_RA <- transform_sample_counts(psN_SRS_beta, function(x) {x/sum(x)})
+```
+
+
+```{r}
+qf_eight <- c("#FF6F00BF", "#C71000BF", "#008EA0BF", "#8A4198BF", "#FF6348BF", "#5A9599BF","#FF95A8BF","#84D7E1BF")
+f_three <- c("#C71000BF","#8A4198BF","#5A9599BF")
+library(ggtext)
+
+ord_theme = theme_ipsum() + 
+  theme(plot.title = element_markdown(size = 32, margin=margin(0,0,30,0)),
+    
+    axis.title.x = element_text(size=25),
+    
+    axis.title.y =element_text(size=25),
+    
+    axis.text.x = element_text(size = 17),
+    
+    axis.text.y = element_text(size = 17),
+
+    axis.line.x=element_line(color="black",size=0.5,linetype=1),
+
+    axis.line.y=element_line(color="black",size=0.5,linetype=1),
+
+    panel.grid.major = element_blank(),
+
+    panel.grid.minor = element_blank(),
+
+    panel.background = element_blank(),
+
+    legend.text = element_markdown(size=25),
+    
+    legend.title = element_markdown(face="bold", size = 28),
+    
+    legend.position = "top") 
+```
+
+
+####Faecal
+```{r results='hide'}
+library(vegan)
+F_otu_RA <- data.frame(otu_table(psF_RA))
+F.dist <- vegdist(F_otu_RA, method="bray",
+                    binary=FALSE, diag=FALSE, upper=FALSE,
+                    na.rm=FALSE)
+
+pcoa_bactF<-cmdscale(F.dist, k=2, eig=T)
+pcoa.var.perF<-round(pcoa_bactF$eig/sum(pcoa_bactF$eig)*100, 1)
+
+pcoa.valuesF <- pcoa_bactF$points
+
+pcoa.dataF <- data.frame(Sample=rownames(pcoa.valuesF),
+                        X=pcoa.valuesF[,1],
+                        Y=pcoa.valuesF[,2])
+
+pcoa.mapF <- data.frame(sample_data(psF_RA))
+
+pcoa.dataF$Name <- pcoa.mapF$Name
+pcoa.dataF$Nest <- pcoa.mapF$Nest
+pcoa.dataF$Age <- pcoa.mapF$Age
+pcoa.dataF$Aspergillosis <- pcoa.mapF$Aspergillosis
+pcoa.dataF$Faecal_experiment <- pcoa.mapF$Faecal_experiment
+pcoa.dataF$Nest_Type <- pcoa.mapF$Nest_Type
+pcoa.dataF$Location <- pcoa.mapF$Location
+pcoa.dataF$E_abundance <- pcoa.mapF$E_abundance
+pcoa.dataF$HR <- as.character(pcoa.dataF$Location)
+pcoa.dataF$HR[which(pcoa.dataF$HR == "Hand rearing")] = "In captive facility"
+pcoa.dataF$HR[which(pcoa.dataF$HR != "In captive facility")] = "In nest"
+pcoa.dataF$Location = factor(pcoa.dataF$Location, levels = c("Pukenui","Whenua Hou","Hand rearing"))
+
+vec.spF<-envfit(pcoa_bactF$points , F_otu_RA, perm=1000)
+
+vec.sp.df_F<-
+  as.data.frame(scores(vec.spF, "vectors"))
+
+vec.sp.df_F$species<-rownames(vec.sp.df_F)
+
+
+vec.sp.df_F.sig <- vec.sp.df_F[c(1,12,24,2,3,97,100,138,21,51,6), ]
+
+kakapo_colours <- c("#4b5e1e", "#7D9D33", "#DCC949", "#BCA888", "#CD8862", "#775B24")
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.f.HR <- ggplot(data=pcoa.dataF, aes(x = X, y = Y, colour = Location)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perF[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perF[2], "%","]" ,sep=" ")) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("#818e61","#818e61","#8e6181"), name = "Location") + 
+  scale_shape_manual(values=c(21,22,18)) +
+  ord_theme + theme(legend.box = "vertical") + 
+  ggtitle("Faecal samples by location")
+
+taxa.f.HR
+#ggsave("ordinations/taxa_vec_faecal_HR.png", taxa.f.pooR, height = 10, width = 18, dpi = 300)
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.f.coli <- ggplot(data=pcoa.dataF, aes(x = X, y = Y, colour = E_abundance)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perF[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perF[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_shape_manual(values=c(21,22,18)) +
+  ord_theme + theme(legend.box = "vertical") + 
+  guides(shape = guide_legend(order = 1)) +
+  scale_color_gradient(low = "blue", high = "red", name="*ES. coli* abundance",
+                       labels=c("Low","High"),breaks=c(200,1000), guide = "colourbar") +
+  ggtitle("Faecal samples by ASV1 *ES. coli* abundance")
+
+taxa.f.coli
+#ggsave("ordinations/taxa_vec_faecal_ecoli.png", taxa.f.coli, height = 10, width = 18, dpi = 300)
+```
+
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.f.age <- ggplot(data=pcoa.dataF, aes(x = X, y = Y, colour = Age)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perF[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perF[2], "%","]" ,sep=" ")) + 
+   geom_vline(xintercept = 0, linetype = "dashed") +
+   geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("#788374","#ebd27d","#aa644d","#372a39","#597692","#5a5145")) + 
+  scale_shape_manual(values=c(21,22,18,17)) +
+  ord_theme + theme(legend.box = "vertical") + 
+  guides(color = guide_legend(nrow = 2)) +
+  guides(shape = guide_legend(order = 1)) +
+  ggtitle("Faecal samples by k\u101k\u101p\u14d chick age")
+
+taxa.f.age
+#ggsave("ordinations/taxa_vec_faecal_age.png", taxa.f.age, height = 10, width = 18, dpi = 300)
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+library(ggrepel)
+taxa.f.vec <- ggplot(data=pcoa.dataF, aes(x = X, y = Y)) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perF[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perF[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_segment(data=vec.sp.df_F.sig,
+               aes(x=0,xend=Dim1,y=0,yend=Dim2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               colour="red", size = 1,
+               inherit.aes=FALSE) +
+  geom_text_repel(data=vec.sp.df_F.sig,
+            aes(x=Dim1,y=Dim2,label=species),size=7.5,
+            inherit.aes=FALSE, max.overlaps = Inf) +
+  ord_theme + 
+     xlim(-1.22, 0.7) +
+     ylim(-1, 0.6) +
+  ggtitle("Influential ASV vectors for ordinated faecal samples")
+
+taxa.f.vec
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.f.nest <- ggplot(data=pcoa.dataF, aes(x = X, y = Y, colour = Nest)) +
+  geom_point(size=5, aes(shape=Aspergillosis)) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perF[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perF[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_segment(data=vec.sp.df_F.sig, 
+               aes(x=0,xend=Dim1,y=0,yend=Dim2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               colour="red", size = 1,
+               inherit.aes=FALSE) + 
+  geom_text(data=vec.sp.df_F.sig,
+            aes(x=Dim1,y=Dim2,label=species),size=4,
+            inherit.aes=FALSE) + 
+  scale_color_manual(values = col.42) + 
+  scale_shape_manual(values=c(15:17)) +
+  ordplot_theme + theme(legend.box = "vertical") + 
+  guides(color = guide_legend(order = 1)) +
+   xlim(-1.1, 0.6) +
+  ylim(-0.45, 0.9) +
+  ggtitle("Faecal samples by resident nest")
+
+taxa.f.nest
+ggsave("ordinations/taxa_vec_faecal_nest.png", taxa.f.nest, height = 10, width = 18, dpi = 300)
+```
+
+####Nest
+```{r results='hide'}
+N_otu_RA <- data.frame(otu_table(psN_RA))
+N.dist <- vegdist(N_otu_RA, method="bray",
+                    binary=FALSE, diag=FALSE, upper=FALSE,
+                    na.rm=FALSE)
+
+pcoa_bactN<-cmdscale(N.dist, k=2, eig=T)
+pcoa.var.perN<-round(pcoa_bactN$eig/sum(pcoa_bactN$eig)*100, 1)
+
+pcoa.valuesN <- pcoa_bactN$points
+
+pcoa.dataN <- data.frame(Sample=rownames(pcoa.valuesN),
+                        X=pcoa.valuesN[,1],
+                        Y=pcoa.valuesN[,2])
+
+pcoa.mapN <- data.frame(sample_data(psN_RA))
+
+pcoa.dataN$Faecal_experiment <- pcoa.mapN$Faecal_experiment
+pcoa.dataN$Nest <- pcoa.mapN$Nest
+pcoa.dataN$Aspergillosis <- pcoa.mapN$Aspergillosis
+pcoa.dataN$Nest_Type <- pcoa.mapN$Nest_Type
+pcoa.dataN$Age <- pcoa.mapN$Age
+pcoa.dataN$Location <- pcoa.mapN$Location
+pcoa.dataN$E_abundance <- pcoa.mapN$E_abundance
+
+vec.spN<-envfit(pcoa_bactN$points , N_otu_RA, perm=1000)
+
+vec.sp.df_N<-
+  as.data.frame(scores(vec.spN, "vectors"))
+
+vec.sp.df_N$species<-rownames(vec.sp.df_N)
+
+
+vec.sp.df_N.sig <- vec.sp.df_N[c(1,15,237,10,104,356,88,7,2,3,160,46,69), ]
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.n.age <- ggplot(data=pcoa.dataN, aes(x = X, y = Y, colour = Age)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perN[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perN[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("#788374","#ebd27d","#aa644d","#372a39")) + 
+  scale_shape_manual(values=c(16,15,18,17,21:25)) +
+  ord_theme + theme(legend.box = "vertical") + guides(shape = guide_legend(order = 1)) +
+  ggtitle("Litter samples by days since first chick")
+
+
+taxa.n.age
+#ggsave("ordinations/taxa_vec_litter_time.png", taxa.n, height = 10, width = 18, dpi = 300)
+```
+
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.n.coli <- ggplot(data=pcoa.dataN, aes(x = X, y = Y, colour = E_abundance)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perN[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perN[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_shape_manual(values=c(16,15,21:25)) +
+  ord_theme + theme(legend.box = "vertical") + 
+  guides(shape = guide_legend(order = 1)) +
+  scale_color_gradient(low = "blue", high = "red", name="*ES. coli* abundance",
+                       labels=c("Low","High"),breaks=c(250,1550), guide = "colourbar") +
+  ggtitle("Litter samples by *ES. coli* abundance")
+
+taxa.n.coli
+#ggsave("ordinations/taxa_vec_litter_ecoli.png", taxa.n.coli, height = 10, width = 18, dpi = 300)
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.n.is <- ggplot(data=pcoa.dataN, aes(x = X, y = Y, colour = Location)) +
+  geom_point(size=7, aes(shape=Location), stroke = 2) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perN[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perN[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("#8e6181","#818e61")) + 
+  scale_shape_manual(values=c(16,15)) +
+  ord_theme + theme(legend.box = "vertical") + 
+  ggtitle("Litter samples by island")
+
+taxa.n.is
+```
+
+
+```{r fig.cap = "K\u101k\u101p\u14d PCoA plot with taxonomic vectors",fig.height = 10, fig.width = 18, dpi=300}
+taxa.n.vec <- ggplot(data=pcoa.dataN, aes(x = X, y = Y)) +
+  xlab(paste("PCoA 1","[" ,pcoa.var.perN[1], "%","]" ,sep=" ")) +
+  ylab(paste("PCoA 2","[" ,pcoa.var.perN[2], "%","]" ,sep=" ")) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_segment(data=vec.sp.df_N.sig,
+               aes(x=0,xend=Dim1,y=0,yend=Dim2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               colour="red", size = 1,
+               inherit.aes=FALSE) +
+  geom_text_repel(data=vec.sp.df_N.sig,
+            aes(x=Dim1,y=Dim2,label=species),size=7.5,
+            inherit.aes=FALSE, max.overlaps = Inf) +
+  ord_theme + 
+    ylim(-0.8, 0.8) +
+    xlim(-0.95, 0.7) +
+  ggtitle("Influential ASV vectors for ordinated litter samples")
+
+taxa.n.vec
+```
+
+```{r fig.height = 21, fig.width = 38, dpi=300}
+pcoa_faecal_ords <-  ggarrange(taxa.f.HR, taxa.f.coli, taxa.f.age, taxa.f.vec, labels = c("A","B","C","D"), ncol = 2, nrow=2, font.label = list(size = 30))
+pcoa_faecal_ords
+ggsave("ordinations/taxa_vectors_faecal_edit_23SEPT.png", pcoa_faecal_ords, width = 36, height = 20, dpi = 300, bg = "white")
+
+pcoa_litter_ords <-  ggarrange(taxa.n.is, taxa.n.coli, taxa.n.age, taxa.n.vec, labels = c("A","B","C","D"), ncol = 2, nrow=2, font.label = list(size = 30))
+pcoa_litter_ords
+ggsave("ordinations/taxa_vectors_litter_edit_23SEPT.png", pcoa_litter_ords, width = 36, height = 20, dpi = 400, bg = "white")
+```
+
+
+#Mixed models
+
+```{r}
+library(lme4)
+
+glom_f_genus <- tax_glom(psF_RA, taxrank = 'Genus')
+
+tax.table.g <- data.frame(otu_table(glom_f_genus))
+tax.glom.g <- data.frame(tax_table(glom_f_genus))
+tax.map.g <- data.frame(sample_data(glom_f_genus))
+
+names(tax.table.g) <- tax.glom.g$Genus
+
+taxa.model.map.g <- cbind(tax.map.g,tax.table.g)
+names(taxa.model.map.g)[names(taxa.model.map.g) == "Escherichia-Shigella"] <- "Escherichia.Shigella"
+names(taxa.model.map.g)[names(taxa.model.map.g) == "Clostridium sensu stricto 1"] <- "Clostridium.sensu.stricto.1"
+
+#Escherichia-Shigella
+escherichia.model <- lme4::lmer(Escherichia.Shigella ~ Age + (1|Name), data=taxa.model.map.g)
+summary(escherichia.model)
+null.es.model <- lme4::lmer(Escherichia.Shigella ~ (1|Name), data=taxa.model.map.g)
+anova(null.es.model,escherichia.model)
+
+escherichia.model.L <- lme4::lmer(Escherichia.Shigella ~ Location + (1|Name), data=taxa.model.map.g)
+summary(escherichia.model.L)
+anova(null.es.model,escherichia.model.L)
+
+#Streptococcus
+strep.model <- lme4::lmer(Streptococcus ~ Age + (1|Name), data=taxa.model.map.g)
+summary(strep.model)
+null.strep.model <- lme4::lmer(Streptococcus ~ (1|Name), data=taxa.model.map.g)
+anova(null.strep.model,strep.model)
+
+strep.model.L <- lme4::lmer(Streptococcus ~ Location + (1|Name), data=taxa.model.map.g)
+summary(strep.model.L)
+anova(null.strep.model,strep.model.L)
+
+#Lactobacillus
+lactob.model <- lme4::lmer(Lactobacillus ~ Age + (1|Name), data=taxa.model.map.g)
+summary(lactob.model)
+null.lactob.model <- lme4::lmer(Lactobacillus ~ (1|Name), data=taxa.model.map.g)
+anova(null.lactob.model,lactob.model)
+
+lactob.model.L <- lme4::lmer(Lactobacillus ~ Location + (1|Name), data=taxa.model.map.g)
+summary(lactob.model.L)
+anova(null.lactob.model,lactob.model.L)
+
+#Tyzzerella
+tyzz.model <- lme4::lmer(Tyzzerella ~ Age + (1|Name), data=taxa.model.map.g)
+summary(tyzz.model)
+null.tyzz.model <- lme4::lmer(Tyzzerella ~ (1|Name), data=taxa.model.map.g)
+anova(null.tyzz.model,tyzz.model)
+
+tyzz.model.L <- lme4::lmer(Tyzzerella ~ Location + (1|Name), data=taxa.model.map.g)
+summary(tyzz.model.L)
+anova(null.tyzz.model,tyzz.model.L)
+
+#Clostridium.sensu.stricto.1 
+clostridium.model <- lme4::lmer(Clostridium.sensu.stricto.1 ~ Age + (1|Name), data=taxa.model.map.g)
+summary(clostridium.model)
+null.clostridium.model <- lme4::lmer(Clostridium.sensu.stricto.1 ~ (1|Name), data=taxa.model.map.g)
+anova(null.clostridium.model,clostridium.model)
+
+clostridium.model.L <- lme4::lmer(Clostridium.sensu.stricto.1 ~ Location + (1|Name), data=taxa.model.map.g)
+summary(clostridium.model.L)
+anova(null.clostridium.model,clostridium.model.L)
+
+
+lme4.p.values <- c("0.0002","0.0000000000000004","0.08","0.000000005","0.09","0.00000000000005","0.000006","0.03","0.000001","0.0000000000000002")
+p.adjust(lme4.p.values, method = "BH")
+```
+
+#Spearman Correlations
+
+###Faecal
+```{r}
+library(corrplot)
+library(vegan)
+psF.SRS.subset <- subset_samples(psF_SRS, Faecal_experiment != "Hand rearing" & Nest != "Transfer crate")
+srs.map.F <- data.frame(sample_data(psF.SRS.subset))
+otu_split.F <- data.frame(otu_table(psF.SRS.subset))
+rownames(otu_split.F) <- srs.map.F$Date_Name
+otu_split.F1 <- split(otu_split.F, srs.map.F$Faecal_experiment)
+
+otu_split.F <- data.frame(otu_table(psF_SRS))
+rownames(otu_split.F) <- map.f$Date_Name
+otu_split.F1 <- split(otu_split.F, map.f$Age)
+names(otu_split.F1) <- c("20days","20to40days","40to60days","60to120days","200days","300days")
+
+otu_split.F <- data.frame(otu_table(psF_SRS))
+rownames(otu_split.F) <- map.f$Date_Name
+otu_split.F1 <- split(otu_split.F, map.f$Nest)
+
+cor.list.f <- c()
+cor.m.list.f <- c()
+dist.list.f <- c() 
+
+for (i in 1:length(otu_split.F1)) {
+     dist.list.f[[i]] <- vegdist(otu_split.F1[[i]], method = "bray")
+     
+      cor.m.list.f[[i]] <- cor.mtest(dist.list.f[[i]]) 
+      
+      cor.list.f[[i]] <- cor(as.matrix(dist.list.f[[i]]), method = "spearman") 
+      
+      cor.m.list.f[[i]]$p.adjust <- cor.m.list.f[[i]]$p
+      
+      cor.m.list.f[[i]]$p.adjust[upper.tri(cor.m.list.f[[i]]$p.adjust, diag = TRUE)] <- p.adjust(cor.m.list.f[[i]]$p.adjust[upper.tri(cor.m.list.f[[i]]$p.adjust, diag = TRUE)], method = "fdr")
+      
+      file_name <- paste("cor_plots/faecal",names(otu_split.F1[i]),".png")
+
+  png(file_name, width = 1500, height = 1500, bg = "white")
+  corrplot(cor.list.f[[i]], p.mat = cor.m.list.f[[i]]$padjust, method = 'color', diag = FALSE, type = 'upper',
+         sig.level = c(0.001, 0.01, 0.05), pch.cex = 0.9,
+         insig = 'label_sig', pch.col = 'white', order = 'hclust')
+  dev.off()
+}
+```
+
+
+```{r fig.height= 10, fig.width=12}
+names(cor.list.f) = c("Not removed","Removed","Unknown")
+d.f <- reshape2::melt(cor.list.f)
+
+kruskal.test(d.f$value, d.f$L1)
+library(dunn.test); packageVersion("dunn.test")
+dunn.test(d.f$value, d.f$L1, method = "bh")
+
+faecal.spearman <- data.frame(start=c("Not removed", "Removed","Not removed"), 
+                            end=c("Removed","Unknown","Unknown"),
+                            y=c(1,1.2,1.4),
+                            label=c("0.092","0.43","0.41"))
+
+names(cor.list.f) = c("<20 days","20 - 40 days","40 - 60 days","60 - 120 days","200+ days","300+ days")
+d.f <- reshape2::melt(cor.list.f)
+
+kruskal.test(d.f$value, d.f$L1) #4.007e-15
+library(dunn.test); packageVersion("dunn.test")
+dunn.test(d.f$value, d.f$L1, method = "bh")
+
+faecal.spearman <- data.frame(start=c("<20 days", "<20 days","<20 days","20 - 40 days","20 - 40 days","20 - 40 days","40 - 60 days","40 - 60 days","60 - 120 days","200+ days"), 
+                            end=c("40 - 60 days","60 - 120 days","200+ days","40 - 60 days","60 - 120 days","200+ days","60 - 120 days","300+ days","200+ days","300+ days"),
+                            y=c(1.6,2,2.4,1,1.4,2.2,1.2,1.8,1,1.2),
+                            label=c("0.00001***","0.0007***","0.0003***","0.00001***","0.0006***","0.0003***","0.00001***","0.035*","0.00001***","0.03*"))
+
+
+library(ggsignif)
+
+ggplot(d.f,aes(x = factor(L1, levels = c("<20 days","20 - 40 days","40 - 60 days","60 - 120 days","200+ days","300+ days")), y = value)) + 
+  geom_boxplot(size=1.0, aes(fill=L1)) + 
+  boxplot_theme +
+  scale_fill_manual(name = "Chick age",values= c("#7D9D33", "#CED38C", "#DCC949", "#BCA888", "#CD8862", "#775B24"),
+                    limits = c("<20 days","20 - 40 days","40 - 60 days","60 - 120 days","200+ days","300+ days")) +
+  labs(x = "Chick age", y = "Spearman coeffecients") +
+  ggtitle("Faecal", subtitle =  "Kruskal-Wallis p = 4e-15") +
+  geom_signif(data=faecal.spearman,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6)
+
+ggsave("boxplots/spearman_faecal_age.png", last_plot(), height = 10, width = 12, dpi = 400)
+```
+
+###Nest litter
+```{r}
+library(corrplot) #sample size must be >2
+#subset_samples(psN_SRS, Nest != "Aranga" & Nest != "Awarua" & Nest != "Ihi" & Nest != "Kuihi" & Nest != "Pura" & Nest != "Ra" & Nest != "Weheruatanga-o-te-po")
+psN.SRS.subset <- psN_SRS
+srs.map.N <- data.frame(sample_data(psN.SRS.subset))
+otu_split.N <- data.frame(otu_table(psN.SRS.subset))
+rownames(otu_split.N) <- srs.map.N$Date_Name
+otu_split.N1 <- split(otu_split.N, srs.map.N$Faecal_experiment)
+
+cor.list.n <- c()
+cor.m.list.n <- c()
+dist.list.n <- c() 
+
+otu_split.N <- data.frame(otu_table(psN_SRS))
+rownames(otu_split.N) <- map.n$Date_Name
+otu_split.N1 <- split(otu_split.N, map.n$Age)
+names(otu_split.N1) <- c("20days","20to40days","40to60days","60to90days")
+
+
+for (i in 1:length(otu_split.N1)) {
+     dist.list.n[[i]] <- vegdist(otu_split.N1[[i]], method = "bray")
+     
+      cor.m.list.n[[i]] <- cor.mtest(dist.list.n[[i]]) 
+      
+      cor.list.n[[i]] <- cor(as.matrix(dist.list.n[[i]]), method = "spearman") 
+      
+     cor.m.list.n[[i]]$p.adjust <- cor.m.list.n[[i]]$p
+      
+      cor.m.list.n[[i]]$p.adjust[upper.tri(cor.m.list.n[[i]]$p.adjust, diag = TRUE)] <- p.adjust(cor.m.list.n[[i]]$p.adjust[upper.tri(cor.m.list.n[[i]]$p.adjust, diag = TRUE)], method = "fdr")
+      
+      file_name <- paste("cor_plots/litter",names(otu_split.N1[i]),".png")
+
+  png(file_name, width = 1500, height = 1500)
+  corrplot(cor.list.n[[i]], p.mat = cor.m.list.n[[i]]$p, method = 'color', diag = FALSE, type = 'upper',
+         sig.level = c(0.001, 0.01, 0.05), pch.cex = 0.9,
+         insig = 'label_sig', pch.col = 'white', order = 'hclust')
+  dev.off()
+}
+```
+
+```{r fig.height= 10, fig.width=12}
+names(cor.list.n) = c("Not removed","Removed","Unknown")
+d.n <- reshape2::melt(cor.list.n)
+
+kruskal.test(d.n$value, d.n$L1)
+library(dunn.test); packageVersion("dunn.test")
+dunn.test(d.n$value, d.n$L1, method = "bh")
+
+litter.spearman <- data.frame(start=c("Not removed", "Removed","Not removed"), 
+                            end=c("Removed","Unknown","Unknown"),
+                            y=c(1,1.2,1.4),
+                            label=c("0.0012*","0.20","0.13"))
+
+names(cor.list.n) = c("<20 days","20 - 40 days","40 - 60 days","60 - 90 days")
+d.n <- reshape2::melt(cor.list.n)
+
+kruskal.test(d.n$value, d.n$L1)
+dunn.test(d.n$value, d.n$L1, method = "bh")
+
+litter.spearman <- data.frame(start=c("<20 days", "<20 days","20 - 40 days","40 - 60 days"), 
+                            end=c("20 - 40 days","40 - 60 days","60 - 90 days","60 - 90 days"),
+                            y=c(1,1.6,1.2,1.4),
+                            label=c("0.00001***","0.00001***","0.035*","0.045*"))
+
+
+ggplot(d.n,aes(x = factor(L1, levels = c("<20 days","20 - 40 days","40 - 60 days","60 - 90 days")), y = value)) + 
+  geom_boxplot(size=1.0, aes(fill=L1)) + 
+  boxplot_theme +
+  labs(x = "Nest", y = "Spearman coeffecients") +
+  ggtitle("Litter", subtitle =  "Kruskal-Wallis p = 1.3e-15") +
+  scale_fill_manual(name = "Faecal removal",values= c("#7D9D33", "#CED38C", "#DCC949", "#BCA888"),
+                    limits = c("<20 days","20 - 40 days","40 - 60 days","60 - 90 days")) +
+  geom_signif(data=litter.spearman,aes(xmin=start, xmax=end, annotations=label, y_position=y),
+              manual=TRUE, tip_length = 0, textsize = 6)
+
+ggsave("boxplots/spearman_litter_time.png", last_plot(), height = 10, width = 12, dpi = 400)
+```
+
+
+#DeSeq2
+
+```{r results='hide'}
+library(ggplot2)
+library(dplyr)
+library(microbiome)
+library(phyloseq)
+library(RColorBrewer)
+library(DESeq2)
+library(ggpubr)
+library(hrbrthemes)
+my_theme <- theme_ipsum() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text.y = element_text(face="italic"))
+# Create a folder to save results
+dir.create("deseq_results")
+```
+
+```{r}
+psF2.ASV.df = as.data.frame(otu_table(psF2))
+psF2.ASV.df = psF2.ASV.df[,order(colSums(psF2.ASV.df),decreasing = T)]
+psF2.taxa.df = as.data.frame(tax_table(psF2))
+
+identical(rownames(psF2.taxa.df), colnames(psF2.ASV.df))
+setdiff(rownames(psF2.taxa.df), colnames(psF2.ASV.df))
+psF2.taxa.df = psF2.taxa.df[colnames(psF2.ASV.df),]
+
+psF2.taxa.df$ASV_ID <- paste("ASV_", 1:nrow(psF2.taxa.df), sep="")
+psF2.taxa.df$concat = paste(psF2.taxa.df$ASV_ID, psF2.taxa.df$Taxonomy, sep = "_")
+rownames(psF2.taxa.df) = psF2.taxa.df$concat
+names(psF2.ASV.df) = rownames(psF2.taxa.df)
+
+psF2.taxa.df$ASV_ID = NULL
+psF2.taxa.df$concat = NULL
+psF2.taxa.df = as.matrix(psF2.taxa.df)
+
+psF2_edit <- phyloseq(otu_table(psF2.ASV.df, taxa_are_rows = F),
+                     tax_table(psF2.taxa.df),
+                     sample_data(map.f))
+psF2_edit
+
+ps.sta <- psF2_edit
+
+sample_data(ps.sta)$HR <- as.character(sample_data(ps.sta)$Location)
+sample_data(ps.sta)$HR[which(sample_data(ps.sta)$HR != "Hand rearing")] = "All.other.samples"
+
+
+sample_data(ps.sta)$HR <- revalue(sample_data(ps.sta)$HR, c("Hand rearing" = "Hand.rearing"))
+ps.sta.0.1 = filter_taxa(ps.sta, function(x) sum(x > 3) > (0.05*length(x)), TRUE)
+ps.sta.1 <- ps.sta.0.1
+```
+
+
+```{r}
+meta.st <- meta(ps.sta.0.1)
+meta.st$HR <- as.factor(meta.st$HR)
+diagdds_sta = phyloseq_to_deseq2(ps.sta.1, ~ HR)
+ gm_mean = function(x, na.rm=TRUE){
+     exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+ }
+ geoMeans = apply(counts(diagdds_sta), 1, gm_mean)
+ diagdds_sta = estimateSizeFactors(diagdds_sta, geoMeans = geoMeans)
+ dds_st = DESeq(diagdds_sta, test="Wald", fitType="local")
+```
+
+
+```{r}
+otu.ab1 <- abundances(ps.sta.1)
+ res1 = results(dds_st, cooksCutoff = FALSE)
+ res_tax1 = cbind(as.data.frame(res1), as.matrix(rownames(otu.ab1)), OTU = rownames(res1))
+ res_tax1 = cbind(as(res_tax1, "data.frame"), as(tax_table(ps.sta.1)[rownames(res_tax1), ], "matrix"))
+ res_tax_sig1 = subset(res_tax1, padj < 0.01 & 0 < abs(log2FoldChange))
+ res_tax1$Significant <- ifelse(rownames(res_tax1) %in% rownames(res_tax_sig1) , "Yes", "No")
+ res_tax1$Significant[is.na(res_tax1$Significant)] <- "No"
+ sig_res1 <- res_tax1[rownames(res_tax_sig1),"OTU"]
+ res_table1 <- data.frame(res_tax_sig1$baseMean , res_tax_sig1$log2FoldChange,res_tax_sig1$padj)
+ row.names(res_table1) <- rownames(res_tax_sig1)
+ 
+data_to_write1 <-res_tax_sig1[,c("baseMean","log2FoldChange","pvalue","padj","Phylum", "Class", "Order", "Family", "Genus","Species","Taxonomy","OTU")]
+data_to_write1$DifferentiallyAbundant <-levels(meta.st[,"HR"])[as.numeric(data_to_write1$log2FoldChange>0)+1]
+
+# Total numer of OTUs DA
+nrow(data_to_write1) #differentially abundant ASVs
+length(unique(data_to_write1$Genus)) #how many genera
+length(unique(data_to_write1$Taxonomy)) #how many species
+write.csv(data_to_write1,"deseq_results/deseq_comparison_HR.csv")
+df1 <- mutate(data_to_write1, Taxonomy, Taxonomy= paste(data_to_write1$Taxonomy ))
+```
+
+```{r fig.cap = "K\u101k\u101p\u14d DeSeq2 differential abundance of genera plot HR",fig.width=10, fig.height=10}
+HR.st <- ggplot(df1, aes(log2FoldChange, Taxonomy)) + 
+  geom_point(aes(color = DifferentiallyAbundant), shape = 21, size = 3, stroke = 2) + 
+  scale_color_manual(values= c("#CED38C","#7D9D33"), labels = c("All other samples", "Hand rearing"), name = "Differentially Abundant") + my_theme + 
+  theme(axis.text.y = element_text(face="italic"),
+        panel.border = element_rect(color="black",size=0.7,linetype=1, fill = "NA"), 
+        panel.background = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_text(size=16),
+        legend.box.background = element_rect(),
+        legend.box.margin = margin(5, 5, 5, 5),
+        legend.title = element_text(face = "bold", size = 15),
+        legend.text = element_text(size = 13)) +  geom_vline(xintercept = 0) 
+HR.st 
+ggsave("deseq_results/Deseq_HR.png", width = 10, height = 10, dpi=400)
+```
+
