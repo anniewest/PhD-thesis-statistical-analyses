@@ -36,10 +36,10 @@ All chapters utilised amplicon sequence variants (ASVs) produced by the R packag
 
 **Chapter Two**: [The microbiome in threatened species conservation](https://www.sciencedirect.com/science/article/pii/S0006320718311145)
 
-**Chapter Three**: 
+**Chapter Three**: [Influence of management practice on the microbiota of a critically endangered species: a longitudinal study of kākāpō chick faeces and associated nest litter](https://animalmicrobiome.biomedcentral.com/articles/10.1186/s42523-022-00204-w)
 
-**Chapter Four**:
+**Chapter Four**: [The mycobiota of faeces from the critically endangered kākāpō and associated nest litter](https://www.tandfonline.com/doi/full/10.1080/03014223.2023.2170428)
 
-**Chapter Five**:
+**Chapter Five**:[Capturing species-wide diversity of the gut microbiota and its relationship with genomic variation in the critically endangered kākāpō](https://onlinelibrary.wiley.com/doi/full/10.1111/mec.16999#:~:text=Previous%20research%20has%20shown%20that,et%20al.%2C%202022)
 
 **Chapter Six**: [Gut microbiota of the threatened takahē: biogeographic patterns and conservation implications](https://animalmicrobiome.biomedcentral.com/articles/10.1186/s42523-021-00158-5)
